@@ -1,0 +1,10 @@
+-r requirements-serve.txt
+scikit-learn>=1.4
+lightgbm>=4.3        # only used by the notebook as a batch-learning reference point
+matplotlib>=3.8
+jupyterlab>=4.0
+nbformat>=5.9
+nbconvert>=7.0
+streamlit>=1.35      # optional front-end
+requests>=2.31
+pytest>=8.0

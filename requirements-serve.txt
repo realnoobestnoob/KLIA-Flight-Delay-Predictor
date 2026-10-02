@@ -1,0 +1,12 @@
+# Runtime for the API container. Training libraries are intentionally NOT here.
+# river is pinned exactly because model bundles are pickles: train and serve must match.
+river==0.26.1
+fastapi>=0.115
+uvicorn>=0.30
+pydantic>=2.7
+httpx>=0.27
+SQLAlchemy>=2.0
+psycopg2-binary>=2.9
+PyYAML>=6.0
+pandas>=2.2,<4
+numpy>=1.26

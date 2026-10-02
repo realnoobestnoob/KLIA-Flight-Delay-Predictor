@@ -1,0 +1,48 @@
+# All tunables live here. Secrets (DATABASE_URL, API_KEY) come from environment variables, never from this file.
+data:
+  table: departures            # table in your Neon database
+  delay_threshold_minutes: 15  # delayed = actual - scheduled >= this
+  batch_size: 20000            # rows fetched per query by the update job
+
+features:
+  prior_strength: 10           # smoothing: rates shrink toward their parent rate until a key has this many flights
+  ewm_span: 30                 # recency-weighted airline delay rate
+  route_windows_days: [7, 30]  # calendar-day windows for route delay rate
+  default_flights_per_hour: 4.0
+  heavy_gust_kmh: 30
+  heavy_rain_mm: 5
+  weather_cols: [wind_gusts_10m, precipitation, cloud_cover_mid]
+  # Add new years here (YYYY-MM-DD). Flights on listed days get is_public_holiday=1, the day before is_holiday_eve=1.
+  public_holidays:
+    - "2026-01-01"
+    - "2026-01-29"
+    - "2026-01-30"
+    - "2026-02-01"
+    - "2026-03-28"
+    - "2026-03-29"
+    - "2026-04-28"
+    - "2026-05-01"
+    - "2026-05-12"
+    - "2026-06-01"
+    - "2026-08-31"
+    - "2026-09-16"
+    - "2026-10-20"
+    - "2026-12-25"
+
+model:
+  # The notebook writes artifacts/model_choice.json, which overrides name/params below.
+  name: arf                    # logreg | hat | arf
+  # Depth-capped on purpose: an unconstrained ARF gzipped to 63 MB after 20k demo rows, depth 6 gave 3 MB.
+  params: {n_models: 10, max_depth: 6, grace_period: 300}
+  calibration_window: 5000     # recent (probability, outcome) pairs kept to pick the decision threshold
+  warmup_rows: 500             # first rows of a fresh model are not scored
+
+registry:
+  keep_bundles: 3              # newest model bundles kept in Neon (older ones are deleted)
+
+api:
+  refresh_seconds: 1800        # how often a request may trigger a "is there a newer model?" check
+  weather_ttl_seconds: 1800
+  klia_lat: 2.7456
+  klia_lon: 101.7072
+  timezone: Asia/Kuala_Lumpur

@@ -1,0 +1,12 @@
+# Optional free hosting on Render (Blueprint). Free web services sleep after ~15 idle minutes.
+services:
+  - type: web
+    name: klia-flight-api
+    runtime: docker
+    plan: free
+    healthCheckPath: /healthz
+    envVars:
+      - key: DATABASE_URL
+        sync: false      # paste your Neon connection string in the Render dashboard
+      - key: API_KEY
+        sync: false

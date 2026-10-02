@@ -1,0 +1,18 @@
+# Optional: run the incremental update on GitHub's free runners instead of your own PC.
+# Needs a repository secret named DATABASE_URL (Settings > Secrets and variables > Actions).
+name: update-model
+on:
+  schedule: [{ cron: "30 20 * * *" }]   # 20:30 UTC = 04:30 Malaysia time, daily
+  workflow_dispatch: {}
+concurrency: update-model
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11", cache: pip }
+      - run: pip install -r requirements-train.txt
+      - run: python -m klia.jobs.update
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
