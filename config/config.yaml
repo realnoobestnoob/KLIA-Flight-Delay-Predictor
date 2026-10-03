@@ -30,15 +30,24 @@ features:
     - "2026-12-25"
 
 model:
-  # The notebook writes artifacts/model_choice.json, which overrides name/params below.
-  name: arf                    # logreg | hat | arf
-  # Depth-capped on purpose: an unconstrained ARF gzipped to 63 MB after 20k demo rows, depth 6 gave 3 MB.
-  params: {n_models: 10, max_depth: 6, grace_period: 300}
+  # The notebook trains the real model and writes artifacts/pretrained_bundle.gz + model_choice.json,
+  # which the update job loads directly on --bootstrap. These are just the fallback if neither exists.
+  # Base models: sgd_log | sgd_hinge | gnb | mlp   Ensembles: bag_<base> | rsub_<base>
+  name: bag_sgd_log
+  params: {n_estimators: 7}
   calibration_window: 5000     # recent (probability, outcome) pairs kept to pick the decision threshold
   warmup_rows: 500             # first rows of a fresh model are not scored
 
+eda:
+  subset_fraction: 0.25        # fraction of rows used for the initial model/ensemble comparison and tuning
+  batch_size: 500              # rows per partial_fit call when simulating production batches in the notebook
+  n_optuna_trials: 30
+
 registry:
   keep_bundles: 3              # newest model bundles kept in Neon (older ones are deleted)
+  # Model size cap only applies when the bundle is stored in Neon (Postgres bytea column).
+  # Store locally (no DATABASE_URL, or point MLflow's local artifact store at it) for no cap at all.
+  max_mb_neon: 400
 
 api:
   refresh_seconds: 1800        # how often a request may trigger a "is there a newer model?" check

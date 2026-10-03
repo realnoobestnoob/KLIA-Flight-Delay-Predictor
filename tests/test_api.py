@@ -56,7 +56,7 @@ def test_validation_errors(client):
 
 def test_info_endpoints(client):
     assert client.get("/healthz").json()["status"] == "ok"
-    assert client.get("/v1/model").json()["model"] == "hat"
+    assert client.get("/v1/model").json()["model"] == "sgd_log"
     assert "AIRASIA" in client.get("/v1/options").json()["airlines"]
 
 

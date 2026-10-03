@@ -7,7 +7,7 @@ from klia.demo import make
 @pytest.fixture(scope="session")
 def cfg():
     c = load_config()
-    c["model"] = {**c["model"], "name": "hat", "params": {}, "warmup_rows": 200}
+    c["model"] = {**c["model"], "name": "sgd_log", "params": {}, "warmup_rows": 200}
     return c
 
 

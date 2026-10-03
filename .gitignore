@@ -9,3 +9,6 @@ data/*
 artifacts/*
 !artifacts/.gitkeep
 !artifacts/model_choice.json
+
+mlflow.db
+mlruns/

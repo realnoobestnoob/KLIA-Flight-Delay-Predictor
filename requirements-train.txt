@@ -1,10 +1,13 @@
 -r requirements-serve.txt
+river>=0.21            # used only for drift detection (ADWIN) in klia/pipeline.py, not for modeling
 scikit-learn>=1.4
-lightgbm>=4.3        # only used by the notebook as a batch-learning reference point
+lightgbm>=4.3           # reference-only batch benchmark in the notebook
+mlflow>=3.0
+optuna>=3.6
 matplotlib>=3.8
 jupyterlab>=4.0
 nbformat>=5.9
 nbconvert>=7.0
-streamlit>=1.35      # optional front-end
+streamlit>=1.35
 requests>=2.31
 pytest>=8.0

@@ -1,6 +1,5 @@
-# Runtime for the API container. Training libraries are intentionally NOT here.
-# river is pinned exactly because model bundles are pickles: train and serve must match.
-river==0.26.1
+# Runtime for the API container. Training-only libraries (mlflow, optuna, lightgbm) are NOT here.
+scikit-learn>=1.4
 fastapi>=0.115
 uvicorn>=0.30
 pydantic>=2.7
