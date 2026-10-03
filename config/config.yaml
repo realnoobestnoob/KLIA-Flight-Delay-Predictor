@@ -31,12 +31,16 @@ features:
 
 model:
   # The notebook trains the real model and writes artifacts/pretrained_bundle.gz + model_choice.json,
-  # which the update job loads directly on --bootstrap. These are just the fallback if neither exists.
-  # Base models: sgd_log | sgd_hinge | gnb | mlp   Ensembles: bag_<base> | rsub_<base>
+  # which the update job loads directly on --bootstrap. These are the fallback if neither exists.
+  # Base models: sgd_log | sgd_hinge | gnb | mlp | xgb | lgbm | catboost
+  # Ensembles:   bag_<base> | rsub_<base>
   name: bag_sgd_log
   params: {n_estimators: 7}
   calibration_window: 5000     # recent (probability, outcome) pairs kept to pick the decision threshold
   warmup_rows: 500             # first rows of a fresh model are not scored
+  boosting_n_iter: 20          # trees added per partial_fit call for xgb / lgbm / catboost
+                               # lower to keep bundle small; raise for slower but stronger learning
+                               # after k daily updates the bundle holds k × boosting_n_iter trees total
 
 eda:
   subset_fraction: 0.25        # fraction of rows used for the initial model/ensemble comparison and tuning
@@ -46,7 +50,7 @@ eda:
 registry:
   keep_bundles: 3              # newest model bundles kept in Neon (older ones are deleted)
   # Model size cap only applies when the bundle is stored in Neon (Postgres bytea column).
-  # Store locally (no DATABASE_URL, or point MLflow's local artifact store at it) for no cap at all.
+  # Boosting models grow with each update; raise max_mb_neon if needed, or store locally (no cap).
   max_mb_neon: 400
 
 api:
@@ -55,3 +59,10 @@ api:
   klia_lat: 2.7456
   klia_lon: 101.7072
   timezone: Asia/Kuala_Lumpur
+
+monitoring:
+  drift_reference_rows: 1000   # rows sampled from full training X to store as Evidently reference
+                               # set by the notebook (section 9); stored inside the bundle
+  drift_log_max: 100           # max per-batch drift reports kept in bundle.meta["drift_log"]
+  drift_min_batch: 50          # minimum current-batch rows needed to run an Evidently report
+                               # batches smaller than this are skipped (low statistical power)

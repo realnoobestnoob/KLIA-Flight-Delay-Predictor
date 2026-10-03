@@ -21,7 +21,10 @@ from klia.store.base import open_store
 class PredictRequest(BaseModel):
     airline: str = Field(min_length=2, max_length=60, examples=["AirAsia"])
     destination: str = Field(min_length=2, max_length=60, examples=["Singapore"])
-    scheduled_departure: dt.datetime = Field(description="Local KLIA time, e.g. 2026-10-02T08:30", examples=["2026-10-02T08:30"])
+    scheduled_departure: dt.datetime = Field(
+        description="Local KLIA time, e.g. 2026-10-02T08:30",
+        examples=["2026-10-02T08:30"],
+    )
     aircraft: str | None = Field(default=None, max_length=40, examples=["A320"])
 
     @field_validator("airline", "destination")
@@ -43,21 +46,28 @@ class PredictResponse(BaseModel):
     weather_source: str
 
 
-def create_app(store=None, cache: ModelCache | None = None, weather: Weather | None = None) -> FastAPI:
+def create_app(
+    store=None,
+    cache: ModelCache | None = None,
+    weather: Weather | None = None,
+) -> FastAPI:
     cfg = load_config()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.cfg = cfg
-        app.state.cache = cache or ModelCache(store or open_store(cfg), os.environ.get("KLIA_CACHE_DIR", artifacts_dir() / "cache"),
-                                              cfg["api"]["refresh_seconds"])
+        app.state.cache = cache or ModelCache(
+            store or open_store(cfg),
+            os.environ.get("KLIA_CACHE_DIR", artifacts_dir() / "cache"),
+            cfg["api"]["refresh_seconds"],
+        )
         app.state.weather = weather or Weather(cfg)
         if cache is None:
             app.state.cache.startup()
         yield
 
     app = FastAPI(title="KLIA Flight Delay API", version="2.0", lifespan=lifespan)
-    tz = ZoneInfo(cfg["api"]["timezone"])
+    tz      = ZoneInfo(cfg["api"]["timezone"])
     api_key = os.environ.get("API_KEY", "")
 
     def auth(x_api_key: str | None = Header(default=None)):
@@ -67,8 +77,13 @@ def create_app(store=None, cache: ModelCache | None = None, weather: Weather | N
     def bundle_or_503():
         b = app.state.cache.get()
         if b is None:
-            raise HTTPException(503, "no model available yet: run `python -m klia.jobs.update --bootstrap`")
+            raise HTTPException(
+                503,
+                "no model available yet: run `python -m klia.jobs.update --bootstrap`",
+            )
         return b
+
+    # ── health / metadata ────────────────────────────────────────────────────
 
     @app.get("/healthz")
     def healthz():
@@ -79,27 +94,83 @@ def create_app(store=None, cache: ModelCache | None = None, weather: Weather | N
     def model_info():
         b = bundle_or_503()
         c = app.state.cache
-        return {"version": c.version, "loaded_age_seconds": int(time.time() - c.loaded_at), **b.describe()}
+        return {
+            "version": c.version,
+            "loaded_age_seconds": int(time.time() - c.loaded_at),
+            **b.describe(),
+        }
 
     @app.get("/v1/options", dependencies=[Depends(auth)])
     def options():
         return bundle_or_503().state.options()
 
+    # ── drift monitoring ─────────────────────────────────────────────────────
+
+    @app.get("/v1/drift", dependencies=[Depends(auth)])
+    def drift_status():
+        """Return Evidently drift monitoring summary from the last update run.
+
+        Response fields:
+            drift_events_total  — cumulative count of batches where drift was detected
+            reference_rows      — size of the stored reference sample (set by the notebook)
+            latest_report       — full Evidently result from the most recent update batch
+            drift_history       — last 20 per-batch summaries (ts, drift_detected, share_drifted, …)
+
+        drift_history is empty until the first update job run after --bootstrap.
+        latest_report is null until then too.
+        """
+        b   = bundle_or_503()
+        log = b.meta.get("drift_log", [])
+        last = b.meta.get("last_drift_report", {})
+        ref  = b.meta.get("drift_reference") or {}
+
+        return {
+            "drift_events_total": b.drift_events,
+            "reference_rows":     len(ref.get("data", [])),
+            "latest_report": {
+                "ts":             last.get("ts"),
+                "drift_detected": last.get("drift_detected", False),
+                "share_drifted":  last.get("share_drifted", 0.0),
+                "n_features":     last.get("n_features", 0),
+                "n_drifted":      last.get("n_drifted", 0),
+                "features":       last.get("features", {}),
+            } if last else None,
+            "drift_history": [
+                {k: v for k, v in entry.items() if k not in ("error",)}
+                for entry in log[-20:]
+            ],
+        }
+
+    # ── prediction ───────────────────────────────────────────────────────────
+
     @app.post("/v1/predict", response_model=PredictResponse, dependencies=[Depends(auth)])
     def predict(req: PredictRequest):
-        b = bundle_or_503()
+        b    = bundle_or_503()
         when = req.scheduled_departure
         if when.tzinfo is not None:
             when = when.astimezone(tz).replace(tzinfo=None)
-        a, d = norm(req.airline), norm(req.destination)
+        a, d    = norm(req.airline), norm(req.destination)
         wx, source = app.state.weather.get(when)
-        row = {"sched_dt": when, "airline": a, "destination": d, "aircraft": norm(req.aircraft) or "UNKNOWN", **(wx or {})}
-        p = b.model.predict_proba(b.state.features(row), fallback=b.state.base_rate)
-        t = b.threshold
+        row = {
+            "sched_dt":   when,
+            "airline":    a,
+            "destination":d,
+            "aircraft":   norm(req.aircraft) or "UNKNOWN",
+            **(wx or {}),
+        }
+        p  = b.model.predict_proba(b.state.features(row), fallback=b.state.base_rate)
+        t  = b.threshold
         risk = "high" if p >= t * 1.25 else "elevated" if p >= t else "low"
-        return PredictResponse(delay_probability=round(p, 4), predicted_delayed=p >= t, threshold=t, risk=risk,
-                               model_version=app.state.cache.version or 0, known_airline=b.state.known_airline(a),
-                               known_route=b.state.known_route(a, d), weather_source=source)
+        return PredictResponse(
+            delay_probability=round(p, 4),
+            predicted_delayed=p >= t,
+            threshold=t,
+            risk=risk,
+            model_version=app.state.cache.version or 0,
+            known_airline=b.state.known_airline(a),
+            known_route=b.state.known_route(a, d),
+            weather_source=source,
+        )
 
     return app
 

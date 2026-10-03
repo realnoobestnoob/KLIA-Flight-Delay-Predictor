@@ -1,7 +1,10 @@
 -r requirements-serve.txt
-river>=0.21            # used only for drift detection (ADWIN) in klia/pipeline.py, not for modeling
 scikit-learn>=1.4
-lightgbm>=4.3           # reference-only batch benchmark in the notebook
+xgboost>=2.0           # incremental boosting: adds trees per partial_fit call via xgb_model=
+catboost>=1.2          # incremental boosting: adds trees per partial_fit call via init_model=
+lightgbm>=4.3          # incremental boosting via init_model= + reference batch benchmark in notebook
+evidently>=0.4.30,<0.5.0  # pin to 0.4.x: evidently.report moved in 0.5+ (see klia/monitoring/drift.py)
+river>=0.21            # kept for reference; ADWIN replaced by Evidently in pipeline.py
 mlflow>=3.0
 optuna>=3.6
 matplotlib>=3.8

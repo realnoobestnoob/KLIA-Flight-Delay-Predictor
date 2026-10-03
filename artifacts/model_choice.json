@@ -1,11 +1,17 @@
 {
-  "name": "logreg",
+  "name": "rsub_xgb",
   "params": {
-    "lr": 0.0069701063136019805,
-    "l2": 0.02640779042309513
+    "n_estimators": 12,
+    "subspace_frac": 0.4392370463754463,
+    "n_iter": 10,
+    "max_depth": 4,
+    "eta": 0.05014815657222842,
+    "subsample": 0.6097719476980525,
+    "colsample_bytree": 0.7740818313139453
   },
-  "auc": 0.7797,
+  "subset_auc": 0.719,
+  "full_auc": 0.7549,
   "rows": 80758,
-  "n_trials": 50,
+  "n_trials": 30,
   "chosen_by": "notebooks/01_model_selection_eda.ipynb"
 }

@@ -1,13 +1,18 @@
 """Core update logic, free of any database code so it can be tested and reused by the notebook.
 
 The model is updated with ONE `partial_fit` call per batch of new rows (incremental learning),
-not one call per row. Within a single update-job run, each fetch from the store (up to
+not one call per row.  Within a single update-job run, each fetch from the store (up to
 `data.batch_size` rows) is exactly one such batch.
+
+Drift detection uses Evidently AI (DataDriftPreset) to compare each update batch against the
+reference feature distribution stored in bundle.meta["drift_reference"] by the notebook.
+Results accumulate in bundle.meta["drift_log"] (capped at monitoring.drift_log_max entries).
 """
 from __future__ import annotations
 
+import datetime as dt
+
 import pandas as pd
-from river import drift
 
 from klia.features.state import FeatureState
 from klia.model.bundle import Bundle
@@ -29,39 +34,73 @@ def feature_stream(ok: pd.DataFrame, state: FeatureState) -> tuple[list[dict], l
 
 
 def apply_rows(bundle: Bundle, ok: pd.DataFrame, cfg: dict) -> dict:
-    """Learn from one batch of new, cleaned rows (in place). Returns stats for the run log."""
+    """Learn from one batch of new, cleaned rows (in place).  Returns stats for the run log."""
     if ok.empty:
         return {"rows_learned": 0}
-    mcfg = cfg["model"]
-    X, y = feature_stream(ok, bundle.state)
 
-    # Score this batch BEFORE learning from it (out-of-sample), unless the model is still fresh.
+    mcfg   = cfg["model"]
+    mon    = cfg.get("monitoring", {})
+    X, y   = feature_stream(ok, bundle.state)
+
+    # Score this batch BEFORE learning (out-of-sample), unless the model is still warming up.
     warm = bundle.model.n_learned < mcfg.get("warmup_rows", 500)
     base = bundle.state.base_rate
-    if warm:
-        p = [base] * len(y)
-    else:
-        p = bundle.model.predict_proba(X, fallback=base)
+    p    = [base] * len(y) if warm else bundle.model.predict_proba(X, fallback=base)
 
-    # One drift check per BATCH (not per row): feed the batch's mean absolute error.
-    import numpy as np
-    det = drift.ADWIN(delta=0.002)
-    err = float(np.mean(np.abs(np.asarray(y) - np.asarray(p))))
-    det.update(err)
-    drift_fired = 1 if det.drift_detected else 0
+    # ── Drift detection (Evidently AI) ────────────────────────────────────────
+    # Skipped when: model is warming up, batch is too small, or no reference is stored yet.
+    drift_fired  = 0
+    drift_report: dict = {}
+    min_batch    = mon.get("drift_min_batch", 50)
 
+    if not warm and len(X) >= min_batch and bundle.meta.get("drift_reference"):
+        try:
+            from klia.monitoring.drift import run_drift_report
+            drift_report = run_drift_report(X, bundle.meta)
+            drift_fired  = 1 if drift_report.get("drift_detected", False) else 0
+        except Exception as exc:
+            drift_report = {
+                "ts": dt.datetime.utcnow().isoformat(timespec="seconds"),
+                "drift_detected": False,
+                "error": str(exc),
+            }
+
+    # ── Learn ─────────────────────────────────────────────────────────────────
     bundle.model.partial_fit(X, y)
     if not warm:
         bundle.remember(p, y, mcfg["calibration_window"])
     bundle.drift_events += drift_fired
 
-    stats = {"rows_learned": len(y), "drift_events": drift_fired, "scored_rows": 0 if warm else len(y)}
+    # ── Persist drift log in bundle.meta ──────────────────────────────────────
+    if drift_report:
+        log = bundle.meta.setdefault("drift_log", [])
+        log.append({
+            "ts":            drift_report.get("ts", dt.datetime.utcnow().isoformat(timespec="seconds")),
+            "rows":          len(X),
+            "drift_detected":drift_report.get("drift_detected", False),
+            "share_drifted": drift_report.get("share_drifted", 0.0),
+            "n_drifted":     drift_report.get("n_drifted", 0),
+            "n_features":    drift_report.get("n_features", 0),
+            "error":         drift_report.get("error"),
+        })
+        max_log = mon.get("drift_log_max", 100)
+        bundle.meta["drift_log"]         = log[-max_log:]
+        bundle.meta["last_drift_report"] = drift_report
+
+    # ── Stats for the run log ─────────────────────────────────────────────────
+    stats = {
+        "rows_learned": len(y),
+        "drift_events": drift_fired,
+        "scored_rows":  0 if warm else len(y),
+    }
     bundle.meta.update({
-        "n_rows": bundle.model.n_learned,
-        "last_sched": str(ok["sched_dt"].iloc[-1]),
-        "model_name": bundle.model.name,
+        "n_rows":      bundle.model.n_learned,
+        "last_sched":  str(ok["sched_dt"].iloc[-1]),
+        "model_name":  bundle.model.name,
     })
     stats.update(bundle.refresh_threshold())
-    bundle.meta["metrics"] = {k: v for k, v in stats.items()
-                              if k in ("roc_auc", "f1", "log_loss", "delay_rate", "n_scored")}
+    bundle.meta["metrics"] = {
+        k: v for k, v in stats.items()
+        if k in ("roc_auc", "f1", "log_loss", "delay_rate", "n_scored")
+    }
     return stats

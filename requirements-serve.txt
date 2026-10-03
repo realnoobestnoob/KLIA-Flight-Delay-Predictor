@@ -9,3 +9,6 @@ psycopg2-binary>=2.9
 PyYAML>=6.0
 pandas>=2.2,<4
 numpy>=1.26
+xgboost>=2.0
+lightgbm>=4.3
+catboost>=1.2
