@@ -1,14 +1,60 @@
-.git
-.github
-.venv
-__pycache__
-*.pyc
-.pytest_cache
-.ipynb_checkpoints
-data
-artifacts
-notebooks
-tests
-streamlit_app
+# Exclude from Docker build context to speed up `docker compose build`
+
+# Virtual environments
+.venv/
+.venv-airflow/
+venv/
+env/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Git
+.git/
+.gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Airflow (local; Docker has its own)
+~/airflow/
+.airflow/
+
+# MLflow (local; Docker can rebuild)
+mlflow.db
+mlflow/
+
+# Large data / artifacts (rebuild from notebook if needed)
+artifacts/
+data/
+*.csv
+*.parquet
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Misc
 .env
-*.md
+.env.local
+.env.*.local
+*.log
+tmp/
+temp/

@@ -9,6 +9,6 @@ data/*
 artifacts/*
 !artifacts/.gitkeep
 !artifacts/model_choice.json
-
+Instructions.md
 mlflow.db
 mlruns/

@@ -4,6 +4,8 @@
 Set KLIA_API_URL (default http://localhost:8000) and, if you enabled it, KLIA_API_KEY.
 """
 import datetime as dt
+from dotenv import load_dotenv
+load_dotenv()
 import os
 
 import requests
