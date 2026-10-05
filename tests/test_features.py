@@ -29,6 +29,22 @@ def test_features_do_not_mutate_state(cfg, demo_df):
     assert pickle.dumps(st) == before
 
 
+def test_legacy_pickled_state_gets_new_feature_defaults(cfg, demo_df):
+    ok, _ = clean(demo_df, cfg)
+    state = FeatureState(cfg)
+    del state.peak_hours
+    del state.red_eye_hours
+    del state.airline_last
+    del state.route_last
+
+    restored = pickle.loads(pickle.dumps(state))
+    features = restored.features(ok.iloc[0].to_dict())
+
+    assert features["is_peak_hour"] in (0.0, 1.0)
+    assert features["is_red_eye"] in (0.0, 1.0)
+    assert features["airline_prev1"] == restored.base_rate
+
+
 def test_no_label_leakage(cfg, demo_df):
     """Flipping a row's own label must not change that row's features."""
     ok, _ = clean(demo_df, cfg)

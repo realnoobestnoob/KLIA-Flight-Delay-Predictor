@@ -57,6 +57,10 @@ class FeatureState:
         hol = {dt.date.fromisoformat(str(d)) for d in f.get("public_holidays", [])}
         self.holidays = {d.toordinal() for d in hol}
         self.holiday_eves = {d.toordinal() - 1 for d in hol}
+        # Configurable with sensible KLIA defaults: morning rush (06-09), evening rush (17-21)
+        self.peak_hours = frozenset(f.get("peak_hours", [6, 7, 8, 17, 18, 19, 20]))
+        # Red-eye: late night and early morning where demand patterns differ sharply
+        self.red_eye_hours = frozenset(f.get("red_eye_hours", [0, 1, 2, 3, 4, 22, 23]))
 
         self.n = 0
         self.s = 0
@@ -72,6 +76,19 @@ class FeatureState:
         self.hour_days: dict[int, dict[int, int]] = {}
         self.wmean: dict[str, list] = {c: [0, 0.0] for c in self.wcols}
         self.last_date_ord = 0
+
+        # Cascade delay propagation: last observed outcome per airline and route.
+        # Pipeline.py's feature_stream guarantees features() is read BEFORE update()
+        # is called, so there is no leakage — each flight sees only past outcomes.
+        self.airline_last: dict[str, int] = {}
+        self.route_last: dict[tuple, int] = {}
+
+    def __setstate__(self, state: dict) -> None:
+        self.__dict__.update(state)
+        self.__dict__.setdefault("peak_hours", frozenset([6, 7, 8, 17, 18, 19, 20]))
+        self.__dict__.setdefault("red_eye_hours", frozenset([0, 1, 2, 3, 4, 22, 23]))
+        self.__dict__.setdefault("airline_last", {})
+        self.__dict__.setdefault("route_last", {})
 
     # ---------------------------------------------------------------- READ
     @property
@@ -97,31 +114,58 @@ class FeatureState:
         m, g = self.m, self.base_rate
         route = (a, dest)
 
-        r_air = _rate(self.airline, a, g, m)
-        r_dest = _rate(self.destination, dest, g, m)
-        r_route = _rate(self.route, route, r_air, m)
-        r_air_h = _rate(self.airline_hour, (a, hour), r_air, m)
+        r_air   = _rate(self.airline,      a,           g,     m)
+        r_dest  = _rate(self.destination,  dest,        g,     m)
+        r_route = _rate(self.route,        route,       r_air, m)
+        r_air_h = _rate(self.airline_hour, (a, hour),   r_air, m)
         r_route_h = _rate(self.route_hour, (route, hour), r_route, m)
-        r_ac = g if ac == AIRCRAFT_UNKNOWN else _rate(self.aircraft, ac, g, m)
+        r_ac    = g if ac == AIRCRAFT_UNKNOWN else _rate(self.aircraft, ac, g, m)
 
-        ewm = self.airline_ewm.get(a)
+        ewm   = self.airline_ewm.get(a)
         last3 = self.airline_last3.get(a)
-        hist = self.route_hist.get(route)
+        hist  = self.route_hist.get(route)
+
+        # ── Time-of-day categories ─────────────────────────────────────────────
+        # Explicit flags complement sinusoidal encoding: sin/cos encode smoothly
+        # across midnight but cannot cleanly separate a peak band for linear models.
+        is_peak    = float(hour in self.peak_hours)
+        is_red_eye = float(hour in self.red_eye_hours)
+
+        # ── Cascade delay propagation ──────────────────────────────────────────
+        # ~30-40% of real-world delays propagate from the previous flight on the
+        # same airline or route. Default to the smoothed rate when no history exists.
+        airline_prev1 = self.airline_last.get(a, g)
+        route_prev1   = self.route_last.get(route, r_route)
+
+        # ── Route maturity ─────────────────────────────────────────────────────
+        # log1p of flights seen on this route: tells the model how reliable
+        # route_rate is. Low count → rate shrinks to prior; high count → trust it.
+        r_obj      = self.route.get(route)
+        route_log_n = math.log1p(r_obj.n if r_obj is not None else 0)
+
         x = {
-            "hour_sin": math.sin(2 * math.pi * hour / 24), "hour_cos": math.cos(2 * math.pi * hour / 24),
-            "dow_sin": math.sin(2 * math.pi * dow / 7), "dow_cos": math.cos(2 * math.pi * dow / 7),
-            "is_weekend": float(dow >= 5),
-            "is_public_holiday": float(d_ord in self.holidays),
-            "is_holiday_eve": float(d_ord in self.holiday_eves),
-            "airline_rate": r_air,
-            "airline_rate_ewm": r_air if ewm is None else (ewm * 1.0),
-            "airline_prev3": r_air if not last3 else sum(last3) / len(last3),
-            "airline_hour_rate": r_air_h,
-            "destination_rate": r_dest,
-            "route_rate": r_route,
-            "route_hour_rate": r_route_h,
-            "aircraft_rate": r_ac,
+            "hour_sin":            math.sin(2 * math.pi * hour / 24),
+            "hour_cos":            math.cos(2 * math.pi * hour / 24),
+            "dow_sin":             math.sin(2 * math.pi * dow / 7),
+            "dow_cos":             math.cos(2 * math.pi * dow / 7),
+            "is_weekend":          float(dow >= 5),
+            "is_public_holiday":   float(d_ord in self.holidays),
+            "is_holiday_eve":      float(d_ord in self.holiday_eves),
+            "is_peak_hour":        is_peak,
+            "is_red_eye":          is_red_eye,
+            "airline_rate":        r_air,
+            "airline_rate_ewm":    r_air if ewm is None else float(ewm),
+            "airline_prev3":       r_air if not last3 else sum(last3) / len(last3),
+            "airline_prev1":       airline_prev1,
+            "airline_hour_rate":   r_air_h,
+            "destination_rate":    r_dest,
+            "route_rate":          r_route,
+            "route_hour_rate":     r_route_h,
+            "route_prev1":         route_prev1,
+            "route_log_n":         route_log_n,
+            "aircraft_rate":       r_ac,
         }
+
         for w in self.windows:
             if hist:
                 lo = d_ord - w
@@ -136,14 +180,30 @@ class FeatureState:
             cnts = [c for d, c in days.items() if d_ord - 30 <= d < d_ord]
             if cnts:
                 fph = sum(cnts) / len(cnts)
-        x["flights_per_hour"] = fph
+        x["flights_per_hour"]          = fph
         x["congestion_x_airline_rate"] = fph * r_air
 
-        wx = self._weather(row)
+        wx   = self._weather(row)
         x.update(wx)
         gust = wx.get("wind_gusts_10m", 0.0)
-        rain = wx.get("precipitation", 0.0)
+        rain = wx.get("precipitation",  0.0)
         x["heavy_weather"] = float(gust > self.gust or rain > self.rain)
+
+        # ── Weather severity (continuous ratio score) ──────────────────────────
+        # Values > 1 mean conditions exceed the danger threshold. More informative
+        # than the binary heavy_weather flag; both are kept so the model can learn
+        # the step-change at threshold AND the degree of severity above it.
+        weather_severity   = (gust / self.gust if self.gust > 0 else 0.0) + \
+                             (rain / self.rain if self.rain > 0 else 0.0)
+        x["weather_severity"] = weather_severity
+
+        # ── Interaction features ───────────────────────────────────────────────
+        # Linear / SGD models (the default bag_sgd_log base) cannot discover
+        # multiplicative relationships on their own. These explicit products give
+        # the model a direct signal for the two strongest combined effects.
+        x["peak_x_airline_rate"]  = is_peak * r_air
+        x["congestion_x_weather"] = fph * weather_severity
+
         return x
 
     # --------------------------------------------------------------- WRITE
@@ -156,13 +216,13 @@ class FeatureState:
 
         self.n += 1
         self.s += y
-        _bump(self.airline, a, y)
-        _bump(self.destination, dest, y)
+        _bump(self.airline,      a,           y)
+        _bump(self.destination,  dest,        y)
         if ac != AIRCRAFT_UNKNOWN:
-            _bump(self.aircraft, ac, y)
-        _bump(self.route, route, y)
-        _bump(self.airline_hour, (a, hour), y)
-        _bump(self.route_hour, (route, hour), y)
+            _bump(self.aircraft, ac,          y)
+        _bump(self.route,        route,       y)
+        _bump(self.airline_hour, (a, hour),   y)
+        _bump(self.route_hour,   (route, hour), y)
 
         prev = self.airline_ewm.get(a)
         self.airline_ewm[a] = float(y) if prev is None else prev + self.alpha * (y - prev)
@@ -183,6 +243,12 @@ class FeatureState:
                 st[1] += (float(v) - st[1]) / st[0]
         self.last_date_ord = max(self.last_date_ord, d_ord)
 
+        # ── Cascade delay propagation ──────────────────────────────────────────
+        # Written AFTER features() is read (pipeline.py's feature_stream guarantees
+        # read → update order), so there is no leakage.
+        self.airline_last[a]    = y
+        self.route_last[route]  = y
+
     # --------------------------------------------------------------- misc
     def known_airline(self, a: str) -> bool:
         return a in self.airline
@@ -201,7 +267,7 @@ class FeatureState:
 def row_from_record(rec: dict) -> dict:
     """Make a feature-ready row from a cleaned record (normalises text keys)."""
     r = dict(rec)
-    r["airline"] = norm(r["airline"])
+    r["airline"]     = norm(r["airline"])
     r["destination"] = norm(r["destination"])
-    r["aircraft"] = norm(r.get("aircraft")) or AIRCRAFT_UNKNOWN
+    r["aircraft"]    = norm(r.get("aircraft")) or AIRCRAFT_UNKNOWN
     return r

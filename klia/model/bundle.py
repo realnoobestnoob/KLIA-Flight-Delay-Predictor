@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import sklearn
 
+from klia.features.selection import FeatureSelector
 from klia.features.state import FeatureState
 from klia.model import incremental as inc
 
@@ -24,13 +25,14 @@ def _versions() -> dict:
 
 @dataclass
 class Bundle:
-    model: object            # an IncrementalModel / BaggingEnsemble / RandomSubspaceEnsemble
-    state: FeatureState
-    threshold: float = 0.5
-    recent_p: list = field(default_factory=list)
-    recent_y: list = field(default_factory=list)
-    meta: dict = field(default_factory=dict)
+    model:      object           # IncrementalModel / BaggingEnsemble / RandomSubspaceEnsemble
+    state:      FeatureState
+    threshold:  float = 0.5
+    recent_p:   list  = field(default_factory=list)
+    recent_y:   list  = field(default_factory=list)
+    meta:       dict  = field(default_factory=dict)
     drift_events: int = 0
+    selector:   FeatureSelector = field(default_factory=FeatureSelector)  # passthrough until fitted
 
     def remember(self, p, y, window: int) -> None:
         self.recent_p = (self.recent_p + [float(v) for v in p])[-window:]
@@ -42,12 +44,21 @@ class Bundle:
         m = {"n_scored": int(len(p))}
         if len(p) >= 200 and y.min() != y.max():
             self.threshold, _ = inc.best_threshold(p, y, self.threshold)
-            m["roc_auc"] = round(float(roc_auc_score(y, p)), 4)
-            m["f1"] = round(float(f1_score(y, p >= self.threshold)), 4)
-            m["log_loss"] = round(float(log_loss(y, p)), 4)
-            m["delay_rate"] = round(float(y.mean()), 4)
+            m["roc_auc"]      = round(float(roc_auc_score(y, p)), 4)
+            m["f1"]           = round(float(f1_score(y, p >= self.threshold)), 4)
+            m["log_loss"]     = round(float(log_loss(y, p)), 4)
+            m["delay_rate"]   = round(float(y.mean()), 4)
         m["threshold"] = self.threshold
         return m
+
+    def feature_importances(self) -> dict[str, float] | None:
+        """Return {feature_name: normalised_importance} from the trained model, or None.
+
+        Delegates to klia.features.selection.feature_importances(); result is also
+        available via bundle.selector.importances once the selector has been fitted.
+        """
+        from klia.features.selection import feature_importances
+        return feature_importances(self)
 
     def dumps(self) -> bytes:
         self.meta["versions"] = _versions()
@@ -56,18 +67,32 @@ class Bundle:
     @staticmethod
     def loads(blob: bytes) -> "Bundle":
         b = pickle.loads(gzip.decompress(blob))   # only ever load bundles you wrote yourself
+        # Back-compat: bundles saved before the selector was added get a passthrough selector.
+        if not hasattr(b, "selector"):
+            b.selector = FeatureSelector()
         saved = b.meta.get("versions", {})
         if saved and saved.get("scikit_learn") != sklearn.__version__:
-            warnings.warn(f"bundle trained with scikit-learn {saved.get('scikit_learn')}, running {sklearn.__version__}")
+            warnings.warn(f"bundle trained with scikit-learn {saved.get('scikit_learn')}, "
+                          f"running {sklearn.__version__}")
         return b
 
     def describe(self) -> dict:
-        return {**{k: v for k, v in self.meta.items() if k != "versions"},
-                "model": self.model.name, "threshold": self.threshold,
-                "n_learned": self.model.n_learned, "drift_events": self.drift_events}
+        d = {**{k: v for k, v in self.meta.items() if k != "versions"},
+             "model":        self.model.name,
+             "threshold":    self.threshold,
+             "n_learned":    self.model.n_learned,
+             "drift_events": self.drift_events}
+        if self.selector.is_fitted:
+            d["n_features_selected"] = len(self.selector.selected)
+            d["features_selected"]   = self.selector.selected
+        return d
 
 
 def new_bundle(cfg: dict) -> Bundle:
     m = cfg["model"]
-    return Bundle(model=inc.build(m["name"], m.get("params")), state=FeatureState(cfg),
-                  meta={"created": dt.datetime.utcnow().isoformat() + "Z"})
+    return Bundle(
+        model    = inc.build(m["name"], m.get("params")),
+        state    = FeatureState(cfg),
+        selector = FeatureSelector(),
+        meta     = {"created": dt.datetime.utcnow().isoformat() + "Z"},
+    )

@@ -12,6 +12,10 @@ features:
   heavy_gust_kmh: 30
   heavy_rain_mm: 5
   weather_cols: [wind_gusts_10m, precipitation, cloud_cover_mid]
+  # KLIA peak departure windows: morning rush (06-09) and evening rush (17-21).
+  peak_hours: [6, 7, 8, 17, 18, 19, 20]
+  # Red-eye: late night and early morning with distinct delay profiles.
+  red_eye_hours: [0, 1, 2, 3, 4, 22, 23]
   # Add new years here (YYYY-MM-DD). Flights on listed days get is_public_holiday=1, the day before is_holiday_eve=1.
   public_holidays:
     - "2026-01-01"
@@ -28,6 +32,17 @@ features:
     - "2026-09-16"
     - "2026-10-20"
     - "2026-12-25"
+
+feature_selection:
+  enabled: true
+  # Number of features the model trains on. With 27 engineered features, top_k=20
+  # keeps the highest-signal features and drops the noisy tail.
+  # Decrease for a smaller, faster model; increase to keep more features.
+  # Set enabled: false to skip selection entirely and train on all features.
+  top_k: 20
+  # Rows used for the importance-ranking probe during --bootstrap.
+  # Larger = more stable ranking; 5000 is sufficient for SGD coefficient stability.
+  probe_rows: 5000
 
 model:
   # The notebook trains the real model and writes artifacts/pretrained_bundle.gz + model_choice.json,
