@@ -32,7 +32,7 @@ except Exception as e:
     st.stop()
 
 airline = st.selectbox("Airline", opt["airlines"])
-dests = opt["routes"].get(airline) or opt["destinations"]
+dests = opt["destinations"]
 destination = st.selectbox("Destination", dests)
 c1, c2 = st.columns(2)
 day = c1.date_input("Date", dt.date.today())
