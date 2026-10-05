@@ -62,9 +62,8 @@ def _parse_dates(s: pd.Series) -> pd.Series:
 
 def clean(df: pd.DataFrame, cfg: dict) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Return (ok, rejected). `ok` is sorted by scheduled time and carries the label."""
-    wcols = cfg["features"]["weather_cols"]
     if df.empty:
-        cols = ["id", "airline", "destination", "aircraft", "sched_dt", "delay_min", "is_delayed", *wcols]
+        cols = ["id", "airline", "destination", "aircraft", "sched_dt", "delay_min", "is_delayed"]
         return pd.DataFrame(columns=cols), df.assign(reason="")
     threshold = cfg["data"]["delay_threshold_minutes"]
     out = pd.DataFrame({"id": df["id"].values}, index=df.index)
@@ -103,8 +102,6 @@ def clean(df: pd.DataFrame, cfg: dict) -> tuple[pd.DataFrame, pd.DataFrame]:
     out["sched_dt"] = sched
     out["delay_min"] = delay
     out["is_delayed"] = (delay >= threshold).fillna(False).astype(int)
-    for c in wcols:
-        out[c] = pd.to_numeric(df[c], errors="coerce") if c in df.columns else float("nan")
 
     good = reason == ""
     ok = out[good].copy()

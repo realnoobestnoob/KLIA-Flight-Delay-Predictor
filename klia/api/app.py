@@ -12,7 +12,6 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field, field_validator
 
 from klia.api.cache import ModelCache
-from klia.api.weather import Weather
 from klia.config import artifacts_dir, load_config
 from klia.etl.validate import norm
 from klia.store.base import open_store
@@ -43,13 +42,11 @@ class PredictResponse(BaseModel):
     model_version: int
     known_airline: bool
     known_route: bool
-    weather_source: str
 
 
 def create_app(
     store=None,
     cache: ModelCache | None = None,
-    weather: Weather | None = None,
 ) -> FastAPI:
     cfg = load_config()
 
@@ -61,7 +58,6 @@ def create_app(
             os.environ.get("KLIA_CACHE_DIR", artifacts_dir() / "cache"),
             cfg["api"]["refresh_seconds"],
         )
-        app.state.weather = weather or Weather(cfg)
         if cache is None:
             app.state.cache.startup()
         yield
@@ -149,14 +145,12 @@ def create_app(
         when = req.scheduled_departure
         if when.tzinfo is not None:
             when = when.astimezone(tz).replace(tzinfo=None)
-        a, d    = norm(req.airline), norm(req.destination)
-        wx, source = app.state.weather.get(when)
+        a, d = norm(req.airline), norm(req.destination)
         row = {
             "sched_dt":   when,
             "airline":    a,
             "destination":d,
             "aircraft":   norm(req.aircraft) or "UNKNOWN",
-            **(wx or {}),
         }
         p  = b.model.predict_proba(b.state.features(row), fallback=b.state.base_rate)
         t  = b.threshold
@@ -169,7 +163,6 @@ def create_app(
             model_version=app.state.cache.version or 0,
             known_airline=b.state.known_airline(a),
             known_route=b.state.known_route(a, d),
-            weather_source=source,
         )
 
     return app

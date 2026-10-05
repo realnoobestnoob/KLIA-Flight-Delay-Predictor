@@ -9,9 +9,6 @@ features:
   ewm_span: 30                 # recency-weighted airline delay rate
   route_windows_days: [7, 30]  # calendar-day windows for route delay rate
   default_flights_per_hour: 4.0
-  heavy_gust_kmh: 30
-  heavy_rain_mm: 5
-  weather_cols: [wind_gusts_10m, precipitation, cloud_cover_mid]
   # KLIA peak departure windows: morning rush (06-09) and evening rush (17-21).
   peak_hours: [6, 7, 8, 17, 18, 19, 20]
   # Red-eye: late night and early morning with distinct delay profiles.
@@ -35,7 +32,7 @@ features:
 
 feature_selection:
   enabled: true
-  # Number of features the model trains on. With 27 engineered features, top_k=20
+  # Number of features the model trains on. With 21 engineered features, top_k=20
   # keeps the highest-signal features and drops the noisy tail.
   # Decrease for a smaller, faster model; increase to keep more features.
   # Set enabled: false to skip selection entirely and train on all features.
@@ -49,7 +46,7 @@ model:
   # which the update job loads directly on --bootstrap. These are the fallback if neither exists.
   # Base models: sgd_log | sgd_hinge | gnb | mlp | xgb | lgbm | catboost
   # Ensembles:   bag_<base> | rsub_<base>
-  name: bag_sgd_log
+  name: rsub_xgb
   params: {n_estimators: 7}
   calibration_window: 5000     # recent (probability, outcome) pairs kept to pick the decision threshold
   warmup_rows: 500             # first rows of a fresh model are not scored
@@ -70,9 +67,6 @@ registry:
 
 api:
   refresh_seconds: 1800        # how often a request may trigger a "is there a newer model?" check
-  weather_ttl_seconds: 1800
-  klia_lat: 2.7456
-  klia_lon: 101.7072
   timezone: Asia/Kuala_Lumpur
 
 monitoring:

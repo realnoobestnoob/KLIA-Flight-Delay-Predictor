@@ -51,9 +51,6 @@ class FeatureState:
         self.alpha = 2.0 / (float(f["ewm_span"]) + 1.0)
         self.windows = list(f["route_windows_days"])
         self.default_fph = float(f["default_flights_per_hour"])
-        self.gust = float(f["heavy_gust_kmh"])
-        self.rain = float(f["heavy_rain_mm"])
-        self.wcols = list(f["weather_cols"])
         hol = {dt.date.fromisoformat(str(d)) for d in f.get("public_holidays", [])}
         self.holidays = {d.toordinal() for d in hol}
         self.holiday_eves = {d.toordinal() - 1 for d in hol}
@@ -74,7 +71,6 @@ class FeatureState:
         self.airline_last3: dict[str, deque] = {}
         self.route_hist: dict[tuple, deque] = {}
         self.hour_days: dict[int, dict[int, int]] = {}
-        self.wmean: dict[str, list] = {c: [0, 0.0] for c in self.wcols}
         self.last_date_ord = 0
 
         # Cascade delay propagation: last observed outcome per airline and route.
@@ -95,18 +91,8 @@ class FeatureState:
     def base_rate(self) -> float:
         return (self.s + 1.0) / (self.n + 3.0)   # ~0.33 before any data, converges to the true rate
 
-    def _weather(self, w: dict | None) -> dict:
-        out = {}
-        for c in self.wcols:
-            v = None if w is None else w.get(c)
-            if v is None or (isinstance(v, float) and math.isnan(v)):
-                n, mean = self.wmean[c]
-                v = mean if n else 0.0
-            out[c] = float(v)
-        return out
-
     def features(self, row: dict) -> dict:
-        """row keys: sched_dt (datetime), airline, destination, aircraft (opt), weather columns (opt)."""
+        """row keys: sched_dt (datetime), airline, destination, aircraft (opt)."""
         t: dt.datetime = row["sched_dt"]
         a, dest = row["airline"], row["destination"]
         ac = row.get("aircraft") or AIRCRAFT_UNKNOWN
@@ -183,26 +169,11 @@ class FeatureState:
         x["flights_per_hour"]          = fph
         x["congestion_x_airline_rate"] = fph * r_air
 
-        wx   = self._weather(row)
-        x.update(wx)
-        gust = wx.get("wind_gusts_10m", 0.0)
-        rain = wx.get("precipitation",  0.0)
-        x["heavy_weather"] = float(gust > self.gust or rain > self.rain)
-
-        # ── Weather severity (continuous ratio score) ──────────────────────────
-        # Values > 1 mean conditions exceed the danger threshold. More informative
-        # than the binary heavy_weather flag; both are kept so the model can learn
-        # the step-change at threshold AND the degree of severity above it.
-        weather_severity   = (gust / self.gust if self.gust > 0 else 0.0) + \
-                             (rain / self.rain if self.rain > 0 else 0.0)
-        x["weather_severity"] = weather_severity
-
         # ── Interaction features ───────────────────────────────────────────────
         # Linear / SGD models (the default bag_sgd_log base) cannot discover
-        # multiplicative relationships on their own. These explicit products give
-        # the model a direct signal for the two strongest combined effects.
-        x["peak_x_airline_rate"]  = is_peak * r_air
-        x["congestion_x_weather"] = fph * weather_severity
+        # multiplicative relationships on their own. This explicit product gives
+        # the model a direct signal for the strongest combined effect.
+        x["peak_x_airline_rate"] = is_peak * r_air
 
         return x
 
@@ -235,12 +206,6 @@ class FeatureState:
             for k in [k for k in days if k < d_ord - 60]:
                 del days[k]
 
-        for c in self.wcols:
-            v = row.get(c)
-            if v is not None and not (isinstance(v, float) and math.isnan(v)):
-                st = self.wmean[c]
-                st[0] += 1
-                st[1] += (float(v) - st[1]) / st[0]
         self.last_date_ord = max(self.last_date_ord, d_ord)
 
         # ── Cascade delay propagation ──────────────────────────────────────────
