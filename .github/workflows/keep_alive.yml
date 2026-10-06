@@ -1,0 +1,16 @@
+name: Keep Streamlit awake
+
+on:
+  schedule:
+    - cron: "0 */12 * * *"   # every 12 hours
+  workflow_dispatch:           # allow manual trigger
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Streamlit app
+        run: |
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://klia-flight-delay-predictor.streamlit.app/)
+          echo "HTTP status: $STATUS"
+          [ "$STATUS" -ge 200 ] && [ "$STATUS" -lt 400 ] || exit 1
