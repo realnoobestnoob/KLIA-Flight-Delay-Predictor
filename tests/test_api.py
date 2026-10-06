@@ -17,17 +17,12 @@ class StubCache:
         return self.bundle
 
 
-class StubWeather:
-    def get(self, when):
-        return None, "fallback"
-
-
 @pytest.fixture()
 def client(cfg, demo_df):
     b = new_bundle(cfg)
     ok, _ = clean(demo_df, cfg)
     apply_rows(b, ok, cfg)
-    with TestClient(create_app(cache=StubCache(b), weather=StubWeather())) as c:
+    with TestClient(create_app(cache=StubCache(b))) as c:
         yield c
 
 
@@ -39,7 +34,7 @@ def test_predict_ok(client):
     assert r.status_code == 200
     j = r.json()
     assert 0 <= j["delay_probability"] <= 1 and j["model_version"] == 3
-    assert j["known_airline"] is True and j["weather_source"] == "fallback"
+    assert j["known_airline"] is True
     assert j["predicted_delayed"] == (j["delay_probability"] >= j["threshold"])
 
 
@@ -64,14 +59,14 @@ def test_api_key(cfg, demo_df, monkeypatch):
     monkeypatch.setenv("API_KEY", "secret")
     b = new_bundle(cfg)
     apply_rows(b, clean(demo_df, cfg)[0], cfg)
-    with TestClient(create_app(cache=StubCache(b), weather=StubWeather())) as c:
+    with TestClient(create_app(cache=StubCache(b))) as c:
         assert c.post("/v1/predict", json=BODY).status_code == 401
         assert c.post("/v1/predict", json=BODY, headers={"X-API-Key": "secret"}).status_code == 200
         assert c.get("/healthz").status_code == 200          # health check stays open
 
 
 def test_503_without_model(cfg):
-    with TestClient(create_app(cache=StubCache(None), weather=StubWeather())) as c:
+    with TestClient(create_app(cache=StubCache(None))) as c:
         assert c.post("/v1/predict", json=BODY).status_code == 503
         assert c.get("/healthz").json()["status"] == "no_model"
 

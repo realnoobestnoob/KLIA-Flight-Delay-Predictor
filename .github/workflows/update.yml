@@ -2,7 +2,7 @@ name: Daily model update
 
 on:
   schedule:
-    - cron: "30 20 * * 1"   # 04:30 MYT daily
+    - cron: "30 20 * * 1"     # weekly trigger
   workflow_dispatch: {}       # manual trigger from GitHub Actions UI
 
 concurrency:
