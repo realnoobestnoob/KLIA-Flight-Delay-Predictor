@@ -118,6 +118,16 @@ def run(bootstrap: bool = False, csv: str | None = None,
             bundle, watermark = Bundle.loads(loaded[1]), store.get_watermark()
             log.info("loaded bundle v%s, watermark id=%s", loaded[0], watermark)
 
+        # ── Data detection guard (skip training if no new data) ──────────────
+        # Only check for normal runs; --bootstrap always proceeds (replays history)
+        if not bootstrap and isinstance(store, PostgresStore):
+            new_row_count = store.count_new_rows(watermark)
+            if new_row_count == 0:
+                elapsed = round(time.time() - t0, 1)
+                log.info("no new data, skipped incremental training (elapsed=%.1fs)", elapsed)
+                return {"status": "no_new_data", "seconds": elapsed}
+            log.info("detected %d new rows beyond watermark; proceeding with training", new_row_count)
+
         # ── Feature selection probe (bootstrap only) ──────────────────────────
         # Must run BEFORE the main training loop so that model.feature_names
         # locks to the selected subset on the model's first partial_fit call.
@@ -147,10 +157,6 @@ def run(bootstrap: bool = False, csv: str | None = None,
             log.info("processed %s rows as one batch (watermark id=%s)", len(raw), watermark)
             if len(raw) < batch or (max_rows and totals["rows_in"] >= max_rows):
                 break
-
-        if totals["rows_in"] == 0:
-            log.info("no new rows, nothing to do")
-            return {"status": "no_new_rows"}
 
         info = {**totals, "reject_reasons": reasons, "seconds": round(time.time() - t0, 1),
                 **{k: stats[k] for k in ("roc_auc", "f1", "log_loss", "threshold") if k in stats}}

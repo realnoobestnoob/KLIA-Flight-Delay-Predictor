@@ -52,6 +52,12 @@ class PostgresStore:
             v = c.execute(text("SELECT value FROM etl_state WHERE key='watermark_id'")).scalar()
         return int(v) if v is not None else 0
 
+    def count_new_rows(self, after_id: int) -> int:
+        """Count rows beyond the watermark that are ready to train on (have actual_departure)."""
+        q = text(f"SELECT COUNT(*) FROM {self.table} WHERE id > :a AND actual_departure IS NOT NULL")
+        with self.engine.connect() as c:
+            return int(c.execute(q, {"a": after_id}).scalar() or 0)
+
     def fetch_new_rows(self, after_id: int, limit: int) -> pd.DataFrame:
         q = text(f"SELECT * FROM {self.table} WHERE id > :a AND actual_departure IS NOT NULL ORDER BY id LIMIT :n")
         with self.engine.connect() as c:
