@@ -64,7 +64,7 @@ def create_app(
 
     app = FastAPI(title="KLIA Flight Delay API", version="2.0", lifespan=lifespan)
     tz      = ZoneInfo(cfg["api"]["timezone"])
-    api_key = os.environ.get("API_KEY", "")
+    api_key = os.environ.get("KLIA_API_KEY", "")
 
     def auth(x_api_key: str | None = Header(default=None)):
         if api_key and not hmac.compare_digest(x_api_key or "", api_key):
@@ -138,7 +138,6 @@ def create_app(
         }
 
     # ── prediction ───────────────────────────────────────────────────────────
-
     @app.post("/v1/predict", response_model=PredictResponse, dependencies=[Depends(auth)])
     def predict(req: PredictRequest):
         b    = bundle_or_503()

@@ -120,12 +120,12 @@ def run(bootstrap: bool = False, csv: str | None = None,
 
         # ── Data detection guard (skip training if no new data) ──────────────
         # Only check for normal runs; --bootstrap always proceeds (replays history)
-        if not bootstrap and isinstance(store, PostgresStore):
+        if not bootstrap:
             new_row_count = store.count_new_rows(watermark)
             if new_row_count == 0:
                 elapsed = round(time.time() - t0, 1)
                 log.info("no new data, skipped incremental training (elapsed=%.1fs)", elapsed)
-                return {"status": "no_new_data", "seconds": elapsed}
+                return {"status": "no_new_rows", "seconds": elapsed}
             log.info("detected %d new rows beyond watermark; proceeding with training", new_row_count)
 
         # ── Feature selection probe (bootstrap only) ──────────────────────────

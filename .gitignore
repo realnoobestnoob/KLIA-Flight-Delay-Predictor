@@ -12,3 +12,8 @@ artifacts/*
 Instructions.md
 mlflow.db
 mlruns/
+artifacts/cache/
+artifacts/pretrained_bundle.gz
+**/__pycache__/
+**/*.pyc
+**/*.pyo

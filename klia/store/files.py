@@ -33,6 +33,12 @@ class FileStore:
         p = self.root / "watermark.json"
         return int(json.loads(p.read_text())["watermark_id"]) if p.exists() else 0
 
+    def count_new_rows(self, after_id: int) -> int:
+        if not self.csv_path.exists():
+            return 0
+        df = pd.read_csv(self.csv_path, usecols=["id", "actual_departure"])
+        return int(((df["id"] > after_id) & df["actual_departure"].notna()).sum())
+
     def fetch_new_rows(self, after_id: int, limit: int) -> pd.DataFrame:
         if not self.csv_path.exists():
             raise FileNotFoundError(f"{self.csv_path} not found")
