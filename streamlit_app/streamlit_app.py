@@ -20,16 +20,22 @@ st.title("✈️ KLIA departure delay risk")
 
 @st.cache_data(ttl=600, show_spinner=False)
 def options():
-    r = requests.get(f"{API}/v1/options", headers=HEADERS, timeout=60)   # first call may wake a sleeping host
+    # Wake Render first (free tier sleeps); ignore failure, real call below will catch it
+    try:
+        requests.get(f"{API}/healthz", headers=HEADERS, timeout=10)
+    except Exception:
+        pass
+    r = requests.get(f"{API}/v1/options", headers=HEADERS, timeout=60)
     r.raise_for_status()
     return r.json()
 
 
-try:
-    opt = options()
-except Exception as e:
-    st.error(f"Cannot reach the API at {API}: {e}")
-    st.stop()
+with st.spinner("Connecting to prediction service..."):
+    try:
+        opt = options()
+    except Exception as e:
+        st.error(f"Cannot reach the API at {API}: {e}")
+        st.stop()
 
 airline = st.selectbox("Airline", opt["airlines"])
 dests = opt["destinations"]
