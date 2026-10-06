@@ -56,7 +56,7 @@ def test_info_endpoints(client):
 
 
 def test_api_key(cfg, demo_df, monkeypatch):
-    monkeypatch.setenv("API_KEY", "secret")
+    monkeypatch.setenv("KLIA_API_KEY", "secret")
     b = new_bundle(cfg)
     apply_rows(b, clean(demo_df, cfg)[0], cfg)
     with TestClient(create_app(cache=StubCache(b))) as c:
