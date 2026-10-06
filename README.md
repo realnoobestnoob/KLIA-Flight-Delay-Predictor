@@ -1,202 +1,202 @@
-# KLIA Flight Delay Predictor (MLOps edition)
+# KLIA Flight Delay Predictor
 
-Predicts the chance a departure from Kuala Lumpur International Airport is delayed by 15 minutes or more.
-Free to run: Neon free tier, open-source libraries, Open-Meteo weather, optional free hosting.
-
-```
- Neon "departures" table
-        │  only rows with id > watermark
-        ▼
- ┌────────────── update job (daily, runs and exits) ──────────────┐
- │ validate → FeatureState → online model learns (test-then-train) │
- └───────────────────────────┬─────────────────────────────────────┘
-                             │ saves one bundle (model + feature state + threshold)
-                             ▼
-                  Neon "model_registry" table
-                             │ newest bundle is cached in RAM
-                             ▼
-   Docker container: FastAPI  POST /v1/predict   (never trains)
-                             ▲
-                  Streamlit page or curl
-```
-
-| Folder | What it does |
-|---|---|
-| `klia/etl/` | validation: parses mixed 12h/24h times, builds the delay label, rejects bad rows |
-| `klia/features/state.py` | **FeatureState**: the one feature code path used by training and serving |
-| `klia/model/` | incremental models (scikit-learn partial_fit) + ensembles, and the saved bundle |
-| `klia/jobs/update.py` | the incremental update job |
-| `klia/api/` | REST API and the in-memory model cache |
-| `notebooks/` | EDA and model selection |
-| `tests/` | 19 tests (`pytest`) |
+Predicts the probability that a **KLIA (Kuala Lumpur International Airport) departure will be delayed by 15 minutes or more**. The model automatically trains incrementally every week.
 
 ---
 
-## Setup, step by step
+## For Travellers
 
-You need **Python 3.11 or newer** and **Git**. Docker is only needed for step 9.
+**[→ Open the app](https://klia-flight-delay-predictor.streamlit.app/)**
 
-### 1. Get the code
-```
-cd klia-mlops
-python -m venv .venv
-```
-Activate it: Windows `.venv\Scripts\activate`, macOS/Linux `source .venv/bin/activate`. Then:
-```
-pip install -r requirements-train.txt
-```
+Select your airline, destination, and departure time to get an instant delay risk estimate.
 
-### 2. Check that it works (no database needed)
-```
-pytest -q
-```
-You should see `19 passed`.
+*Note: web app might take a while to start up as I'm using free tier web service*
 
-### 3. Connect to Neon
-1. Neon console → project **klia_flight_predictor** → **Connect** → copy the connection string.
-2. Copy `.env.example` to `.env` and paste it as `DATABASE_URL=...`. (`.env` is git-ignored.)
-3. Verify:
-```
-python -m klia.jobs.check
-```
-It must print `OK` for the connection, the table and the columns. The table is expected to be named `departures` with columns
-`id, date, scheduled_departure, actual_departure, airline, destination` (plus optional `aircraft` and the weather columns).
-If yours differ, change `data.table` in `config/config.yaml`, or tell me the real column names.
+---
 
-### 4. Pick the model (notebook)
+## For Developers
 
-Install the extra libraries first (mlflow, optuna, scikit-learn, river for drift detection):
+### How It Works
+
 ```
-pip install -r requirements-train.txt
-```
-Then open and run **Run -> Run All Cells**:
-```
-jupyter lab notebooks/01_model_selection_eda.ipynb
+Neon Postgres (postgres database)
+    ↓  weekly via GitHub Actions
+Incremental model training
+    ↓  bundle stored in Neon model_registry
+FastAPI on Render  ←→  Streamlit Cloud
 ```
 
-**What it does, in order:**
-1. Loads your data (or synthetic demo data if `DATABASE_URL` is not set) and explores it
-2. On a **subset** of the data (`eda.subset_fraction` in `config.yaml`, default 25%): compares
-   single **incremental** models -- `sgd_log`, `sgd_hinge` (modified Huber), `gnb`, `mlp` -- each
-   updated with `partial_fit` on one batch of rows at a time (never one row at a time, never
-   retrained from scratch). The best one becomes the **benchmark**.
-3. On the **same subset**: tries incremental **ensembles** -- bagging and random-subspace, built
-   from the models above -- and compares them to the benchmark.
-4. Picks the overall best model or ensemble, then **tunes its hyperparameters with Optuna**
-   (`eda.n_optuna_trials` trials) -- still on the subset only.
-5. **Trains the tuned model on the full dataset**, batch by batch, the same way production does it.
-6. Saves `artifacts/pretrained_bundle.gz` + `artifacts/model_choice.json`, and **registers the
-   model in the MLflow Model Registry** (`klia-flight-delay`, aliased `champion`).
+- **Data:** Raw flight departure records stored in Neon Postgres (`departures` table)
+- **Model:** XGBoost; trained incrementally with each weekly run calling `partial_fit` on new rows only
+- **Features:** 21 engineered features (cascade delay rates, smoothed airline/route rates, temporal cyclics, congestion); top 20 selected per bootstrap probe
+- **Serving:** FastAPI on Render loads the latest model bundle from Neon on startup; hot-swaps every 30 minutes without restart
+- **Frontend:** Streamlit Cloud: thin UI only, calls the API
 
-Everything is logged to a local MLflow database (`mlflow.db`, git-ignored). Browse it any time:
-```
-mlflow ui --backend-store-uri sqlite:///mlflow.db
-```
-Open http://127.0.0.1:5000 -- you'll see the `klia-flight-delay` experiment (benchmark, ensembles,
-tuning trials, final model) and the **Models** tab with the registered `champion` version.
+---
 
-With no `DATABASE_URL`, the notebook runs fully on synthetic data for you to see the workflow, but
-does **NOT** save or register anything -- connect Neon and re-run for a real model.
+### API Reference
 
-### 5. Build the first model from your full history (once)
-```
-python -m klia.jobs.update --bootstrap
-```
-This loads `artifacts/pretrained_bundle.gz` from the notebook (if present) and replays your full
-history through it in batches, so the first production model is exactly the one the notebook
-picked and tuned -- it is not retrained from scratch. It also creates three small tables in Neon
-(`etl_state`, `model_registry`, `etl_runs`); your `departures` table is never changed.
+Base URL: `https://your-render-app.onrender.com`
 
-**Model size:** uncapped if stored only via MLflow's local artifact store. If/when a bundle is
-pushed to Neon's `model_registry` table (every `python -m klia.jobs.update` run after bootstrap),
-it is capped at `registry.max_mb_neon` (400 MB by default) -- raise it in `config/config.yaml` if
-your ensemble is larger, there's no need to keep the model small otherwise.
+All endpoints except `/healthz` require the header:
+```
+X-API-Key: your-api-key
+```
 
-### 6. Update as new flights arrive
-```
-python -m klia.jobs.update
-```
-Each run does **one `partial_fit` call per batch** of new rows (`data.batch_size` rows per batch) --
-this is incremental learning, not per-row online learning. With no new rows it does nothing, so
-it's safe to run as often as you like.
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| GET | `/healthz` | None | Health check; returns model version |
+| GET | `/v1/options` | ✅ | Available airlines and destinations |
+| POST | `/v1/predict` | ✅ | Delay probability for a flight |
+| GET | `/v1/model` | ✅ | Model metadata and feature info |
+| GET | `/v1/drift` | ✅ | Evidently drift monitoring summary |
 
-**Option A -- Task Scheduler / cron:** as before (see the original setup, step 6, in your task
-history) -- schedule `python -m klia.jobs.update` daily.
-
-**Option B -- GitHub Actions:** `.github/workflows/update.yml`, needs a repo secret `DATABASE_URL`.
-
-**Option C -- Apache Airflow** (new): runs the same `klia.jobs.update.run()` function on a schedule,
-with a connectivity check beforehand.
-```
-pip install apache-airflow==2.9.3        # in its own venv -- Airflow pins many dependencies
-export AIRFLOW_HOME=~/airflow
-airflow db init
-```
-Point Airflow at this project's DAG, either by editing `dags_folder` in `$AIRFLOW_HOME/airflow.cfg`
-to `<project>/airflow/dags`, or by symlinking:
-```
-ln -s "$(pwd)/airflow/dags/klia_pipeline_dag.py" "$AIRFLOW_HOME/dags/klia_pipeline_dag.py"
-```
-Make sure `DATABASE_URL` is set in the environment Airflow's scheduler/webserver run in, then:
-```
-airflow webserver --port 8080 &
-airflow scheduler
-```
-The DAG `klia_incremental_update` runs daily at 04:30 Malaysia time: `check_connection` (fails fast
-if Neon is unreachable) then `run_update` (the incremental update; skips cleanly if there are no
-new rows).
-
-### 7. Run the API
-```
-uvicorn klia.api.app:app --port 8000
-```
-Open http://localhost:8000/docs, or:
-```
-curl -X POST http://localhost:8000/v1/predict -H "Content-Type: application/json" ^
-  -d "{\"airline\":\"AirAsia\",\"destination\":\"Singapore\",\"scheduled_departure\":\"2026-10-03T18:30\"}"
-```
-(on macOS/Linux use `\` instead of `^`, and plain quotes.) Example reply:
+**POST `/v1/predict` — request body:**
 ```json
-{"delay_probability":0.33,"predicted_delayed":true,"threshold":0.24,"risk":"high","model_version":2,
- "known_airline":true,"known_route":true,"weather_source":"open-meteo"}
+{
+  "airline": "AirAsia",
+  "destination": "Singapore",
+  "scheduled_departure": "2026-10-10T08:30",
+  "aircraft": "A320"
+}
 ```
-Endpoints: `POST /v1/predict`, `GET /v1/options`, `GET /v1/model`, `GET /healthz`. Predictions use the cached model and never train. About every 30 minutes (`api.refresh_seconds`) a request triggers a background check and the API swaps in a newer model without a restart. If Neon is asleep or down it keeps serving the last model, also copied to disk.
 
-### 8. Optional front-end
+**Response:**
+```json
+{
+  "delay_probability": 0.7123,
+  "predicted_delayed": true,
+  "threshold": 0.61,
+  "risk": "high",
+  "model_version": 12,
+  "known_airline": true,
+  "known_route": true
+}
 ```
+
+`risk` is one of `low`, `elevated`, or `high`. `known_airline` / `known_route` flag whether the model has seen this airline or route before — if false, the estimate falls back to the base rate and is less reliable.
+
+---
+
+### Local Setup
+
+**Prerequisites:** Python 3.11+, a [Neon](https://neon.tech) Postgres database.
+
+```bash
+# 1. Clone
+git clone https://github.com/realnoobestnoob/KLIA-Flight-Delay-Predictor
+cd KLIA-Flight-Delay-Predictor
+
+# 2. Install training dependencies
+python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -r requirements-train.txt
+
+# 3. Set environment variables
+cp .env.example .env
+# Edit .env — add DATABASE_URL and optionally RAPIDAPI_KEY
+
+# 4. Verify connectivity
+python -m klia.jobs.check
+
+# 5. Bootstrap (first run only — probes features, replays all history)
+python -m klia.jobs.update --bootstrap
+
+# 6. Start API
+uvicorn klia.api.app:app --reload
+
+# 7. Start Streamlit (separate terminal)
 streamlit run streamlit_app/app.py
 ```
-It only calls the API (`KLIA_API_URL`, default `http://localhost:8000`).
 
-### 9. Docker
+**Subsequent runs** (after bootstrap):
+```bash
+python -m klia.jobs.update   # trains on new rows only; skips if no new data
 ```
-docker build -t klia-api .
-docker run --rm -p 8000:8000 --env-file .env klia-api
-```
-The image holds only serving code (no training libraries), runs as a non-root user and has a health check. It runs a single worker on purpose, because the model lives in that process's memory.
-
-**Free hosting (optional):** `render.yaml` deploys the image to Render's free plan. Set `DATABASE_URL` in the Render dashboard. Free instances sleep after about 15 idle minutes and take roughly a minute to wake. Check Render's current free-plan terms before relying on it. To protect a public API, set `API_KEY` and send it as the `X-API-Key` header.
 
 ---
 
-## Design notes
+### Environment Variables
 
-- **Incremental ETL.** A watermark (`etl_state`) records the last processed `id`. The new bundle and the watermark are saved in one transaction, so a crashed run can simply be repeated.
-- **No training/serving skew.** Every feature is a running statistic in `FeatureState`. Training calls `features()` then `update()` for each flight; the API calls `features()` on the saved state. A test proves the two produce identical numbers.
-- **No label leakage.** A flight's own outcome is written to the state only after its features were read.
-- **Incremental learning, not row-by-row online learning.** Models (`klia/model/incremental.py`) are scikit-learn `partial_fit` estimators -- `sgd_log`, `sgd_hinge` (modified Huber), `gnb`, `mlp` -- plus two incremental ensembles (bagging, random subspace). Each update job run calls `partial_fit` **once per batch** of new rows, never per-row and never a full refit. Each batch is scored before it is learned from (prequential), giving honest out-of-sample metrics. River's ADWIN detector watches the batch-level error and counts drift events; it is used only for drift detection, not for modeling. The decision threshold is re-fitted for F1 on the last 5,000 predictions.
-- **Model selection and tuning (`notebooks/01_model_selection_eda.ipynb`).** Candidate models and ensembles are compared on a subset of the data, the winner is tuned with Optuna on the same subset, then retrained on the full dataset and logged to the **MLflow Model Registry**. See step 4 above.
-- **Model bundle = one file** (model, feature state, threshold, metrics, library versions), gzip-pickled. Stored in Neon's `model_registry` table (newest 3 kept) when `DATABASE_URL` is set, capped at `registry.max_mb_neon` (400 MB) there; stored locally with no size cap otherwise. Bundles are also tracked in MLflow regardless of where the serving copy lives. Only load bundles you created yourself.
-- **Good to know.** The KLIA weather forecast comes from Open-Meteo; if it is unreachable the API falls back to the training averages and says so in `weather_source`. Add new public holidays to `features.public_holidays` in `config/config.yaml` each year. Rows that fail validation are counted by reason in the job log, never silently fixed.
+| Variable | Where | Required | Description |
+|----------|-------|----------|-------------|
+| `DATABASE_URL` | API + update job | ✅ | Neon **direct** (non-pooled) connection string |
+| `KLIA_API_KEY` | API + Streamlit | Recommended | Shared secret for API auth (`X-API-Key` header) |
+| `KLIA_API_URL` | Streamlit only | ✅ | FastAPI base URL |
 
-## Troubleshooting
+---
 
-| Symptom | Fix |
-|---|---|
-| `DATABASE_URL is not set` | create `.env` (step 3) or set the variable in your shell |
-| `missing required columns` | column names differ from the expected ones; see step 3 |
-| API returns 503 `no model available` | run `python -m klia.jobs.update --bootstrap` (step 5) |
-| `another update job is already running` | wait for it; with the file store (CSV mode) delete `artifacts/store/update.lock` |
-| bundle warns about a different `scikit-learn` version | install the same scikit-learn version as when the bundle was trained, or re-run the notebook and `--bootstrap` |
-| model bundle exceeds the Neon cap (400 MB) | raise `registry.max_mb_neon` in `config/config.yaml`, shrink the ensemble (`n_estimators`), or store locally instead (no cap) |
-| Neon connection is slow on the first request | the free database auto-suspends; the first wake-up takes a moment |
+### Docker (API only)
+
+```bash
+docker build -t klia-api .
+docker run -p 8000:8000 -e DATABASE_URL=... -e KLIA_API_KEY=... klia-api
+```
+
+The `Dockerfile` and `render.yaml` are configured for Render deployment out of the box.
+
+---
+
+### Automated Training (GitHub Actions)
+
+The workflow `.github/workflows/update.yml` runs every Monday at 04:30 MYT.
+
+**Setup:**
+1. Go to your repo → Settings → Secrets → Actions
+2. Add secret: `DATABASE_URL` = your Neon direct connection string
+3. Enable the workflow under Actions → "Weekly model update"
+
+The job skips training automatically if no new rows are detected beyond the watermark. Logs are written to `etl_runs` in Neon.
+
+---
+
+### Key CLI Flags
+
+```bash
+# Full retrain from scratch (also re-runs feature selection probe)
+python -m klia.jobs.update --bootstrap
+
+# Process without saving (useful for debugging)
+python -m klia.jobs.update --dry-run
+
+# Limit rows processed (quick smoke test)
+python -m klia.jobs.update --max-rows 1000
+
+# Run against a local CSV instead of Neon
+python -m klia.jobs.update --csv data/departures.csv
+```
+
+> Run `--bootstrap` whenever you add or remove features in `klia/features/state.py`, or switch model type in `config/config.yaml`. Normal incremental runs will silently ignore new features until bootstrap is re-run.
+
+---
+
+### Project Structure
+
+```
+klia/
+├── api/          # FastAPI app and bundle cache
+├── etl/          # Row validation and time parsing
+├── features/     # FeatureState and FeatureSelector
+├── jobs/         # update.py (training entry point), check.py (connectivity)
+├── model/        # Bundle, incremental model, MLflow wrapper
+├── monitoring/   # Evidently drift detection
+└── store/        # PostgresStore (Neon) and FileStore (local/CSV)
+streamlit_app/    # Streamlit frontend (UI only)
+config/           # config.yaml (all tunables, no secrets)
+.github/workflows # update.yml (weekly training), keep_alive.yml (Streamlit ping)
+artifacts/        # pretrained_bundle.gz (bootstrap output); delete before fresh retrain
+notebooks/        # 01_model_selection_eda.ipynb
+tests/            # test_api, test_features, test_update_job, test_validate
+```
+
+---
+
+### Troubleshooting
+
+| Problem | Fix |
+|---------|-----|
+| `503 no model available` | Run `python -m klia.jobs.update --bootstrap` first |
+| `401 invalid or missing X-API-Key` | Set `KLIA_API_KEY` in Render env and Streamlit secrets |
+| `another update job is already running` | Use Neon **direct** URL, not pooled; delete stale advisory lock if job crashed |
+| New features not taking effect | Re-run `--bootstrap`; `feature_names` locks on first `partial_fit` |
+| Bundle size error on Neon | Reduce ensemble size in `config.yaml`; monitor `bundle_mb` in run logs |
+| Streamlit airline dropdown missing entries | Expected — dropdown deduplicates bracket suffixes client-side; model uses full name internally |
