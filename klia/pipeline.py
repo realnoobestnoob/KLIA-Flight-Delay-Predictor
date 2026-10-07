@@ -9,7 +9,7 @@ Feature selection
 If bundle.selector is fitted (set during --bootstrap by the probe phase in update.py),
 each feature dict is filtered to the selected subset AFTER state.features() computes it
 but BEFORE the model sees it.  This means:
-  - FeatureState always receives the full row and accumulates all running statistics
+  - FeatureState always receives the full running statistics
     (no information is lost from the state).
   - The model trains only on the selected features; model.feature_names locks to that
     subset on the very first partial_fit call.
@@ -18,6 +18,19 @@ but BEFORE the model sees it.  This means:
 Drift detection uses Evidently AI (DataDriftPreset) to compare each update batch against the
 reference feature distribution stored in bundle.meta["drift_reference"] by the notebook.
 Results accumulate in bundle.meta["drift_log"] (capped at monitoring.drift_log_max entries).
+
+Decision threshold & metrics
+---------------------------
+The decision_threshold is now tuned offline during `python -m klia.jobs.tune` and
+stored in config.yaml under model.decision_threshold. It is NOT re-tuned during
+production update runs — the threshold is static per model bundle.
+
+AUC and F1 are computed on every scored batch using the static threshold and
+logged to the run log. If model.decision_threshold is absent, falls back to
+the base rate (0.3).
+
+To go back to dynamic per-run F1-maximizing threshold tuning, delete the line
+from config.yaml and uncomment the refresh_threshold() call in apply_rows().
 """
 from __future__ import annotations
 
@@ -107,20 +120,43 @@ def apply_rows(bundle: Bundle, ok: pd.DataFrame, cfg: dict) -> dict:
         bundle.meta["drift_log"]          = log[-max_log:]
         bundle.meta["last_drift_report"]  = drift_report
 
-    # ── Stats for the run log ─────────────────────────────────────────────────
+    # ── Compute AUC and F1 on scored batch ───────────────────────────────────
     stats = {
         "rows_learned": len(y),
         "drift_events": drift_fired,
         "scored_rows":  0 if warm else len(y),
     }
+
+    if not warm and len(y) > 0 and len(set(y)) > 1:  # Only if scored and has both classes
+        import numpy as np
+        from sklearn.metrics import roc_auc_score
+        y_arr = np.array(y)
+        p_arr = np.array(p)
+        
+        roc_auc = float(roc_auc_score(y_arr, p_arr))
+        stats["roc_auc"] = round(roc_auc, 4)
+        
+        # ── F1 at the static threshold ───────────────────────────────────────
+        threshold = float(mcfg.get("decision_threshold", base))
+        pred = (p_arr >= threshold).astype(int)
+        tp = float(np.sum(pred & (y_arr == 1)))
+        fp = float(np.sum(pred & (y_arr == 0)))
+        fn = float(np.sum(~pred & (y_arr == 1)))
+        f1 = 2 * tp / (2 * tp + fp + fn) if (2 * tp + fp + fn) > 0 else 0.0
+        stats["f1"] = round(f1, 4)
+        stats["threshold"] = round(threshold, 2)
+    else:
+        threshold = float(mcfg.get("decision_threshold", base))
+        stats["threshold"] = round(threshold, 2)
+
     bundle.meta.update({
         "n_rows":     bundle.model.n_learned,
         "last_sched": str(ok["sched_dt"].iloc[-1]),
         "model_name": bundle.model.name,
     })
-    stats.update(bundle.refresh_threshold())
+
     bundle.meta["metrics"] = {
         k: v for k, v in stats.items()
-        if k in ("roc_auc", "f1", "log_loss", "delay_rate", "n_scored")
+        if k in ("roc_auc", "f1", "log_loss", "delay_rate", "n_scored", "threshold")
     }
     return stats

@@ -1,77 +1,107 @@
-# All tunables live here. Secrets (DATABASE_URL, API_KEY) come from environment variables, never from this file.
 data:
-  table: departures            # table in your Neon database
-  delay_threshold_minutes: 15  # delayed = actual - scheduled >= this
-  batch_size: 20000            # rows fetched per query by the update job
-
+  table: departures
+  delay_threshold_minutes: 15
+  batch_size: 20000
 features:
-  prior_strength: 10           # smoothing: rates shrink toward their parent rate until a key has this many flights
-  ewm_span: 30                 # recency-weighted airline delay rate
-  route_windows_days: [7, 30]  # calendar-day windows for route delay rate
+  prior_strength: 10
+  ewm_span: 30
+  route_windows_days:
+  - 7
+  - 30
   default_flights_per_hour: 4.0
-  # KLIA peak departure windows: morning rush (06-09) and evening rush (17-21).
-  peak_hours: [6, 7, 8, 17, 18, 19, 20]
-  # Red-eye: late night and early morning with distinct delay profiles.
-  red_eye_hours: [0, 1, 2, 3, 4, 22, 23]
-  # Add new years here (YYYY-MM-DD). Flights on listed days get is_public_holiday=1, the day before is_holiday_eve=1.
+  peak_hours:
+  - 6
+  - 7
+  - 8
+  - 17
+  - 18
+  - 19
+  - 20
+  red_eye_hours:
+  - 0
+  - 1
+  - 2
+  - 3
+  - 4
+  - 22
+  - 23
   public_holidays:
-    - "2026-01-01"
-    - "2026-01-29"
-    - "2026-01-30"
-    - "2026-02-01"
-    - "2026-03-28"
-    - "2026-03-29"
-    - "2026-04-28"
-    - "2026-05-01"
-    - "2026-05-12"
-    - "2026-06-01"
-    - "2026-08-31"
-    - "2026-09-16"
-    - "2026-10-20"
-    - "2026-12-25"
-
+  - '2026-01-01'
+  - '2026-01-29'
+  - '2026-01-30'
+  - '2026-02-01'
+  - '2026-03-28'
+  - '2026-03-29'
+  - '2026-04-28'
+  - '2026-05-01'
+  - '2026-05-12'
+  - '2026-06-01'
+  - '2026-08-31'
+  - '2026-09-16'
+  - '2026-10-20'
+  - '2026-12-25'
 feature_selection:
   enabled: true
-  # Number of features the model trains on. With 21 engineered features, top_k=20
-  # keeps the highest-signal features and drops the noisy tail.
-  # Decrease for a smaller, faster model; increase to keep more features.
-  # Set enabled: false to skip selection entirely and train on all features.
-  top_k: 20
-  # Rows used for the importance-ranking probe during --bootstrap.
-  # Larger = more stable ranking; 5000 is sufficient for SGD coefficient stability.
+  top_k: 18
   probe_rows: 5000
-
 model:
-  # The notebook trains the real model and writes artifacts/pretrained_bundle.gz + model_choice.json,
-  # which the update job loads directly on --bootstrap. These are the fallback if neither exists.
-  # Base models: sgd_log | sgd_hinge | gnb | mlp | xgb | lgbm | catboost
-  # Ensembles:   bag_<base> | rsub_<base>
   name: rsub_xgb
-  params: {n_estimators: 7}
-  calibration_window: 5000     # recent (probability, outcome) pairs kept to pick the decision threshold
-  warmup_rows: 500             # first rows of a fresh model are not scored
-  boosting_n_iter: 20          # trees added per partial_fit call for xgb / lgbm / catboost
-                               # lower to keep bundle small; raise for slower but stronger learning
-                               # after k daily updates the bundle holds k × boosting_n_iter trees total
-
+  params:
+    n_estimators: 6
+    subspace_frac: 0.83
+    eta: 0.0141
+    max_depth: 7
+    subsample: 0.86
+    colsample_bytree: 0.74
+    min_child_weight: 3
+  boosting_n_iter: 10
+  calibration_window: 5000
+  decision_threshold: 0.35
 eda:
-  subset_fraction: 0.25        # fraction of rows used for the initial model/ensemble comparison and tuning
-  batch_size: 500              # rows per partial_fit call when simulating production batches in the notebook
+  subset_fraction: 0.25
+  batch_size: 500
   n_optuna_trials: 30
-
 registry:
-  keep_bundles: 3              # newest model bundles kept in Neon (older ones are deleted)
-  # Model size cap only applies when the bundle is stored in Neon (Postgres bytea column).
-  # Boosting models grow with each update; raise max_mb_neon if needed, or store locally (no cap).
+  keep_bundles: 3
   max_mb_neon: 400
-
 api:
-  refresh_seconds: 1800        # how often a request may trigger a "is there a newer model?" check
+  refresh_seconds: 1800
   timezone: Asia/Kuala_Lumpur
-
 monitoring:
-  drift_reference_rows: 1000   # rows sampled from full training X to store as Evidently reference
-                               # set by the notebook (section 9); stored inside the bundle
-  drift_log_max: 100           # max per-batch drift reports kept in bundle.meta["drift_log"]
-  drift_min_batch: 50          # minimum current-batch rows needed to run an Evidently report
-                               # batches smaller than this are skipped (low statistical power)
+  drift_reference_rows: 1000
+  drift_log_max: 100
+  drift_min_batch: 50
+tuning:
+  sample_rows: 15000
+  cv_folds: 3
+  batch_size: 500
+  gap_penalty: 0.3
+  top_k_min: 12
+  top_k_max: 21
+  eta_min: 0.01
+  eta_max: 0.3
+  max_depth_min: 3
+  max_depth_max: 7
+  subsample_min: 0.6
+  subsample_max: 1.0
+  colsample_min: 0.5
+  colsample_max: 1.0
+  min_child_weight_min: 1
+  min_child_weight_max: 20
+  n_iter_min: 10
+  n_iter_max: 50
+  n_estimators_min: 3
+  n_estimators_max: 10
+  subspace_frac_min: 0.5
+  subspace_frac_max: 0.95
+  best_params:
+    top_k: 18
+    eta: 0.014127985949889484
+    max_depth: 7
+    subsample: 0.8589775122127356
+    colsample_bytree: 0.7427251289025392
+    min_child_weight: 3
+    n_iter: 10
+    n_estimators: 6
+    subspace_frac: 0.8282405978650816
+    threshold: 0.35
