@@ -1,46 +1,67 @@
 """Public (no-auth) prediction endpoint for direct HTTP access.
 
 Exposes POST /v1/public/predict — no API key required.
-Rate-limited to 30 requests per minute per IP using a simple in-memory
-token bucket (no extra dependencies).
+Rate-limited to 30 requests per minute per IP using an async token bucket.
 
 Mount in klia/api/app.py with TWO lines:
 
-    from klia.api.public import router as public_router
+    from klia.api.public import router as public_router, set_bundle_accessor
     app.include_router(public_router)
 
-The local import inside the endpoint function avoids the circular-import
-that would occur if this module imported get_bundle at module level.
-
-Field names in the feature dict (rec) must match the column names your
-cleaned DataFrame produces in klia/etl/validate.py. Adjust the rec dict
-in public_predict() if your column names differ (e.g. dest vs destination).
+The _bundle_accessor variable is injected by app.py via set_bundle_accessor().
+This avoids circular import issues.
 """
 from __future__ import annotations
 
+import asyncio
 import collections
-import threading
 import time
 from datetime import datetime
-from typing import Optional
+from typing import Callable, Optional
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
+from klia.config import load_config
+from klia.etl.validate import norm
+
 router = APIRouter(prefix="/v1/public", tags=["public"])
 
+# ── Bundle accessor injection ─────────────────────────────────────────────────
+_bundle_accessor: Optional[Callable] = None
 
-# ── In-memory rate limiter ────────────────────────────────────────────────────
 
+def set_bundle_accessor(accessor: Callable) -> None:
+    """Inject the get_bundle function from app.py to avoid circular imports."""
+    global _bundle_accessor
+    _bundle_accessor = accessor
+
+
+def _get_bundle():
+    if _bundle_accessor is None:
+        return None
+    try:
+        return _bundle_accessor()
+    except Exception:
+        return None
+
+
+# ── Timezone (loaded once at import, not per-request) ────────────────────────
+_cfg = load_config()
+_tz  = ZoneInfo(_cfg["api"]["timezone"])
+
+
+# ── Async rate limiter ────────────────────────────────────────────────────────
 _RATE_LIMIT  = 30   # max requests per window per IP
 _RATE_WINDOW = 60   # window in seconds
 _ip_log: dict[str, collections.deque] = {}
-_lock   = threading.Lock()
+_lock = asyncio.Lock()
 
 
-def _check_rate_limit(ip: str) -> None:
+async def _check_rate_limit(ip: str) -> None:
     now = time.monotonic()
-    with _lock:
+    async with _lock:
         dq = _ip_log.setdefault(ip, collections.deque())
         while dq and now - dq[0] > _RATE_WINDOW:
             dq.popleft()
@@ -86,71 +107,37 @@ async def public_predict(body: PublicPredictRequest, request: Request) -> Public
     If the model has not seen this airline or route before, the estimate falls back
     to the base delay rate and is less reliable (flagged in the response).
     """
-    _check_rate_limit(request.client.host)
+    await _check_rate_limit(request.client.host)
 
-    # Local import avoids circular import at module level.
-    from klia.api.app import get_bundle  # adjust if your bundle accessor has a different name
-    bundle = get_bundle()
-    if bundle is None:
+    b = _get_bundle()
+    if b is None:
         raise HTTPException(status_code=503, detail="Model not available yet. Try again shortly.")
 
-    # Build the feature record. Keys must match the column names produced by
-    # klia/etl/validate.py. Adjust if your cleaned DataFrame uses different names.
-    rec: dict = {
-        "airline":  body.airline,
-        "dest":     body.destination,   # rename to "destination" if that's your column name
-        "sched_dt": body.scheduled_departure,
-        "aircraft": body.aircraft or "",
+    when = body.scheduled_departure
+    if when.tzinfo is not None:
+        when = when.astimezone(_tz).replace(tzinfo=None)
+
+    a = norm(body.airline)
+    d = norm(body.destination)
+
+    row = {
+        "sched_dt":    when,
+        "airline":     a,
+        "destination": d,
+        "aircraft":    norm(body.aircraft) or "UNKNOWN",
     }
 
-    # Check whether the airline and route are in the model's history.
-    # Uses the same FeatureState that was accumulated during training.
-    state         = bundle.state
-    known_airline = bool(getattr(state, "airline_counts", {}).get(body.airline, 0))
-    known_route   = bool(
-        getattr(state, "route_counts", {}).get((body.airline, body.destination), 0)
-    )
-
-    # Compute features and apply selector (same path as training and serving).
-    base = float(getattr(state, "base_rate", 0.3))
-    try:
-        feat = state.features(rec)
-    except Exception:
-        # If FeatureState requires fields not in the public request, fall back to base rate.
-        return PublicPredictResponse(
-            delay_probability=round(base, 4),
-            predicted_delayed=False,
-            threshold=base,
-            risk="low",
-            model_version=bundle.meta.get("version", -1),
-            known_airline=known_airline,
-            known_route=known_route,
-        )
-
-    if bundle.selector.is_fitted:
-        feat = bundle.selector.filter(feat)
-
-    prob      = float(bundle.model.predict_proba([feat], fallback=base)[0])
-    threshold = float(
-        bundle.meta.get("metrics", {}).get("threshold")
-        or bundle.meta.get("threshold")
-        or base
-    )
-
-    # Risk bucketing — mirrors the authenticated /v1/predict response.
-    if prob >= threshold:
-        risk = "high"
-    elif prob >= threshold * 0.65:
-        risk = "elevated"
-    else:
-        risk = "low"
+    feat = b.state.features(row)
+    p    = b.model.predict_proba(feat, fallback=b.state.base_rate)
+    t    = b.threshold
+    risk = "high" if p >= t * 1.25 else "elevated" if p >= t else "low"
 
     return PublicPredictResponse(
-        delay_probability=round(prob, 4),
-        predicted_delayed=prob >= threshold,
-        threshold=round(threshold, 2),
+        delay_probability=round(p, 4),
+        predicted_delayed=p >= t,
+        threshold=t,
         risk=risk,
-        model_version=bundle.meta.get("version", -1),
-        known_airline=known_airline,
-        known_route=known_route,
+        model_version=int(b.meta.get("version", b.meta.get("model_version", -1))),
+        known_airline=b.state.known_airline(a),
+        known_route=b.state.known_route(a, d),
     )
