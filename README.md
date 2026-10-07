@@ -28,30 +28,36 @@ FastAPI on Render  ←→  Streamlit Cloud
 
 - **Data:** Raw flight departure records stored in Neon Postgres (`departures` table)
 - **Model:** XGBoost ensemble (`rsub_xgb`); trained incrementally with each weekly run calling `partial_fit` on new rows only; hyperparameters tuned offline with Optuna
-- **Features:** 18 features used by model
+- **Features:** 21 engineered features (cascade delay rates, smoothed airline/route rates, temporal cyclics, congestion); top_k selected per bootstrap probe (default: 20, tunable via Optuna)
+- **Threshold:** Decision threshold tuned offline by Optuna (F1-optimised), stored statically in `config.yaml`; applied unchanged during production update runs
 - **Serving:** FastAPI on Render loads the latest model bundle from Neon on startup; hot-swaps every 30 minutes without restart
-- **Frontend:** Streamlit Cloud: basic UI only, calls the API
+- **Frontend:** Streamlit Cloud: thin UI only, calls the API
 
 ---
 
 ### API Reference
 
-Base URL: `https://your-render-app.onrender.com`
-
-All endpoints except `/healthz` require the header:
-```
-X-API-Key: your-api-key
-```
-
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
 | GET | `/healthz` | None | Health check; returns model version |
+| POST | `/v1/public/predict` | None | Delay probability — **no API key required**, rate-limited |
 | GET | `/v1/options` | ✅ | Available airlines and destinations |
 | POST | `/v1/predict` | ✅ | Delay probability for a flight |
 | GET | `/v1/model` | ✅ | Model metadata and feature info |
 | GET | `/v1/drift` | ✅ | Evidently drift monitoring summary |
 
-**POST `/v1/predict` — request body:**
+Authenticated endpoints require the header:
+```
+X-API-Key: your-api-key
+```
+
+---
+
+#### Public Endpoint (no API key)
+
+**POST `/v1/public/predict`** (rate-limited)
+
+**Request body:**
 ```json
 {
   "airline": "AirAsia",
@@ -60,6 +66,8 @@ X-API-Key: your-api-key
   "aircraft": "A320"
 }
 ```
+
+`aircraft` is optional.
 
 **Response:**
 ```json
@@ -74,7 +82,35 @@ X-API-Key: your-api-key
 }
 ```
 
-`risk` is one of `low`, `elevated`, or `high`. `known_airline` / `known_route` flag whether the model has seen this airline or route before — if false, the estimate falls back to the base rate and is less reliable.
+`risk` is one of `low`, `elevated`, or `high`. `known_airline` / `known_route` flag whether the model has seen this airline or route before — if false, the estimate falls back to the base delay rate and is less reliable.
+
+**curl:**
+```bash
+curl -X POST https://klia-flight-delay-predictor.onrender.com/v1/public/predict \
+  -H "Content-Type: application/json" \
+  -d '{
+    "airline": "AirAsia",
+    "destination": "Singapore",
+    "scheduled_departure": "2026-10-10T08:30"
+  }'
+```
+
+**Python:**
+```python
+import requests
+
+response = requests.post(
+    "https://klia-flight-delay-predictor.onrender.com/v1/public/predict",
+    json={
+        "airline": "AirAsia",
+        "destination": "Singapore",
+        "scheduled_departure": "2026-10-10T08:30",
+        "aircraft": "A320",        # optional
+    },
+)
+print(response.json())
+# {'delay_probability': 0.7123, 'predicted_delayed': True, 'risk': 'high', ...}
+```
 
 ---
 
@@ -179,7 +215,7 @@ python -m klia.jobs.update --csv data/departures.csv
 
 ```
 klia/
-├── api/          # FastAPI app and bundle cache
+├── api/          # FastAPI app, bundle cache, and public router (public.py)
 ├── etl/          # Row validation and time parsing
 ├── features/     # FeatureState and FeatureSelector
 ├── jobs/         # update.py (training entry point), tune.py (Optuna tuning), check.py (connectivity)
@@ -201,6 +237,7 @@ tests/            # test_api, test_features, test_update_job, test_validate
 | Problem | Fix |
 |---------|-----|
 | `503 no model available` | Run `python -m klia.jobs.update --bootstrap` first |
+| `429 rate limit exceeded` on `/v1/public/predict` | Max 30 requests/min per IP; use the authenticated `/v1/predict` for higher volume |
 | `401 invalid or missing X-API-Key` | Set `KLIA_API_KEY` in Render env and Streamlit secrets |
 | `another update job is already running` | Use Neon **direct** URL, not pooled; delete stale advisory lock if job crashed |
 | New features not taking effect | Re-run `--bootstrap`; `feature_names` locks on first `partial_fit` |

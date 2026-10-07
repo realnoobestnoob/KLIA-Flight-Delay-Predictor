@@ -15,6 +15,10 @@ from klia.api.cache import ModelCache
 from klia.config import artifacts_dir, load_config
 from klia.etl.validate import norm
 from klia.store.base import open_store
+from klia.api.public import router as public_router
+
+
+app.include_router(public_router)
 
 
 class PredictRequest(BaseModel):
