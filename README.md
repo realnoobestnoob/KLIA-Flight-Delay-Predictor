@@ -27,10 +27,10 @@ FastAPI on Render  ←→  Streamlit Cloud
 ```
 
 - **Data:** Raw flight departure records stored in Neon Postgres (`departures` table)
-- **Model:** XGBoost; trained incrementally with each weekly run calling `partial_fit` on new rows only
-- **Features:** 21 engineered features (cascade delay rates, smoothed airline/route rates, temporal cyclics, congestion); top 20 selected per bootstrap probe
+- **Model:** XGBoost ensemble (`rsub_xgb`); trained incrementally with each weekly run calling `partial_fit` on new rows only; hyperparameters tuned offline with Optuna
+- **Features:** 18 features used by model
 - **Serving:** FastAPI on Render loads the latest model bundle from Neon on startup; hot-swaps every 30 minutes without restart
-- **Frontend:** Streamlit Cloud: thin UI only, calls the API
+- **Frontend:** Streamlit Cloud: basic UI only, calls the API
 
 ---
 
@@ -152,6 +152,12 @@ The job skips training automatically if no new rows are detected beyond the wate
 ### Key CLI Flags
 
 ```bash
+# Tune hyperparameters (XGBoost params, top_k, decision threshold) with Optuna
+python -m klia.jobs.tune                        # fetch from Neon
+python -m klia.jobs.tune --trials 50            # override trial count
+python -m klia.jobs.tune --sample 20000         # override sample row count
+python -m klia.jobs.tune --csv data/departures.csv
+
 # Full retrain from scratch (also re-runs feature selection probe)
 python -m klia.jobs.update --bootstrap
 
@@ -165,7 +171,7 @@ python -m klia.jobs.update --max-rows 1000
 python -m klia.jobs.update --csv data/departures.csv
 ```
 
-> Run `--bootstrap` whenever you add or remove features in `klia/features/state.py`, or switch model type in `config/config.yaml`. Normal incremental runs will silently ignore new features until bootstrap is re-run.
+> Run `--bootstrap` whenever you add or remove features in `klia/features/state.py`, switch model type, or apply new hyperparameters from `tune.py`. Normal incremental runs will silently ignore new features until bootstrap is re-run. After tuning, uncomment `decision_threshold` in `config.yaml` before running `--bootstrap`.
 
 ---
 
@@ -176,7 +182,7 @@ klia/
 ├── api/          # FastAPI app and bundle cache
 ├── etl/          # Row validation and time parsing
 ├── features/     # FeatureState and FeatureSelector
-├── jobs/         # update.py (training entry point), check.py (connectivity)
+├── jobs/         # update.py (training entry point), tune.py (Optuna tuning), check.py (connectivity)
 ├── model/        # Bundle, incremental model, MLflow wrapper
 ├── monitoring/   # Evidently drift detection
 └── store/        # PostgresStore (Neon) and FileStore (local/CSV)
