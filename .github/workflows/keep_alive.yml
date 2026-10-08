@@ -2,15 +2,43 @@ name: Keep Streamlit awake
 
 on:
   schedule:
-    - cron: "0 */12 * * *"   # every 12 hours
-  workflow_dispatch:           # allow manual trigger
+    - cron: "0 */6 * * *"   # every 6 hours
+  workflow_dispatch:
 
 jobs:
   ping:
     runs-on: ubuntu-latest
     steps:
-      - name: Ping Streamlit app
+      - name: Install Playwright
         run: |
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://klia-flight-delay-predictor.streamlit.app/)
-          echo "HTTP status: $STATUS"
-          [ "$STATUS" -ge 200 ] && [ "$STATUS" -lt 400 ] || exit 1
+          pip install playwright
+          playwright install chromium --with-deps
+
+      - name: Wake Streamlit app
+        run: |
+          python - <<'EOF'
+          import asyncio
+          from playwright.async_api import async_playwright
+
+          async def wake():
+              async with async_playwright() as p:
+                  browser = await p.chromium.launch()
+                  page = await browser.new_page()
+                  await page.goto(
+                      "https://klia-flight-delay-predictor.streamlit.app/",
+                      timeout=60000,
+                      wait_until="networkidle",
+                  )
+                  try:
+                      btn = await page.wait_for_selector(
+                          "text=Yes, get this app back up", timeout=5000
+                      )
+                      await btn.click()
+                      await page.wait_for_timeout(30000)
+                      print("App was sleeping — woke it up.")
+                  except Exception:
+                      print("App was already awake.")
+                  await browser.close()
+
+          asyncio.run(wake())
+          EOF
