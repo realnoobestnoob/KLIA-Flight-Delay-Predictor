@@ -221,7 +221,8 @@ klia/
 ├── jobs/         # update.py (training entry point), tune.py (Optuna tuning), check.py (connectivity)
 ├── model/        # Bundle, incremental model, MLflow wrapper
 ├── monitoring/   # Evidently drift detection
-└── store/        # PostgresStore (Neon) and FileStore (local/CSV)
+├── store/        # PostgresStore (Neon) and FileStore (local/CSV)
+└── data/         # Dataset (not latest)
 streamlit_app/    # Streamlit frontend (UI only)
 config/           # config.yaml (all tunables, no secrets)
 .github/workflows # update.yml (weekly training), keep_alive.yml (Streamlit ping)
