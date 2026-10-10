@@ -1,4 +1,4 @@
-# KLIA Flight Delay Predictor
+# AeroPredict KLIA
 
 **AeroPredict KLIA** is a machine learning-enabled application that predicts the probability that a **KLIA (Kuala Lumpur International Airport) flight departure will be delayed by 15 minutes or more**. The model automatically trains incrementally every week.
 
